@@ -1,0 +1,10 @@
+[workspace]
+
+members = [
+    "server",
+    "cli",
+    "blockchain",
+    "strategy",
+    "simulation",
+    "common"
+]
