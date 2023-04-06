@@ -31,7 +31,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn position_constructor() {
+    fn position_new() {
         let position = Position::new(
             Some(Utc::now()),
             None,

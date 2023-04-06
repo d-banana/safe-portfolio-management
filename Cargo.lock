@@ -485,14 +485,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "common"
-version = "0.1.0"
-dependencies = [
- "chrono",
- "ethers",
-]
-
-[[package]]
 name = "console"
 version = "0.14.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -538,6 +530,15 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "ec182b0ca2f35d8fc196cf3404988fd8b8c739a4d270ff118a398feb0cbec1ca"
 dependencies = [
  "unicode-segmentation",
+]
+
+[[package]]
+name = "core"
+version = "0.1.0"
+dependencies = [
+ "chrono",
+ "ethers",
+ "thiserror",
 ]
 
 [[package]]
@@ -2932,6 +2933,10 @@ checksum = "a2eb9349b6444b326872e140eb1cf5e7c522154d69e7a0ffb0fb81c06b37543f"
 [[package]]
 name = "strategy"
 version = "0.1.0"
+dependencies = [
+ "chrono",
+ "core",
+]
 
 [[package]]
 name = "string_cache"

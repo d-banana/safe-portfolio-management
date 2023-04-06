@@ -1,5 +1,6 @@
 use ethers::types::Address;
 
+/// Asset is an ERC-20, we will work with f64 + decimal shift instead of U256 for ease of use.
 pub struct Asset {
     erc20_address: Address,
     display_name: String,
@@ -21,7 +22,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn position_constructor() {
+    fn asset_new() {
         let asset = Asset::new(Address::random(), String::from("ETH"), 8);
         assert_eq!(asset.decimal_shift, 8);
     }

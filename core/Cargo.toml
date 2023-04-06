@@ -1,5 +1,5 @@
 [package]
-name = "common"
+name = "core"
 version = "0.1.0"
 edition = "2021"
 
@@ -8,3 +8,4 @@ edition = "2021"
 [dependencies]
 chrono = "0.4.24"
 ethers = "2.0.2"
+thiserror = "1.0.40"
