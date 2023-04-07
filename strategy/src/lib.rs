@@ -1,2 +1,2 @@
-pub use core::asset::Asset;
+pub use core::*;
 mod dollar_cost_averaging;

@@ -1,8 +1,8 @@
 pub mod asset;
-mod market;
-mod portfolio;
-mod position;
-mod strategy;
+pub mod market;
+pub mod portfolio;
+pub mod position;
+pub mod strategy;
 
 pub fn add(left: usize, right: usize) -> usize {
     left + right

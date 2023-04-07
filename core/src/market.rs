@@ -3,7 +3,7 @@ use chrono::prelude::*;
 
 pub struct Market {
     asset: Asset,
-    hloc_datas: [Hloc],
+    hloc_datas: Vec<Hloc>,
 }
 
 struct Hloc {
