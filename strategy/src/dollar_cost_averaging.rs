@@ -1,9 +1,6 @@
 use crate::asset::Asset;
-use crate::market::Market;
-use crate::portfolio::Portfolio;
-use crate::position::Position;
+use crate::order::MarketOrder;
 use chrono::{prelude::*, Duration};
-use ethers::types::Address;
 use thiserror::Error;
 
 #[derive(Error, Debug, PartialEq)]
@@ -14,6 +11,7 @@ pub enum DollarCostAveragingError {
     NeedToWait(DateTime<Utc>, DateTime<Utc>),
 }
 
+/// Periodically sell the same amount of an asset A to buy an asset B.
 pub struct DollarCostAveraging {
     sell_asset: Asset,
     buy_asset: Asset,
@@ -36,21 +34,20 @@ impl DollarCostAveraging {
         }
     }
 
-    fn check_new_position(
+    pub fn check_new_order(
         &self,
         last_position_datetime: &Option<DateTime<Utc>>,
         sell_balance: f64,
-    ) -> Result<Position, DollarCostAveragingError> {
+    ) -> Result<Option<MarketOrder>, DollarCostAveragingError> {
         let now = Utc::now();
-        let position = Position::new(
+        let order = MarketOrder::new(
             self.sell_asset.clone(),
             self.buy_asset.clone(),
             self.interval_sell_quantity,
-            0f64,
         );
 
         let is_reserve_asset_enough = sell_balance.ge(&self.interval_sell_quantity);
-        if is_reserve_asset_enough == false {
+        if !is_reserve_asset_enough {
             return Err(DollarCostAveragingError::SellAssetBalanceNotEnough(
                 sell_balance,
                 self.interval_sell_quantity,
@@ -58,14 +55,14 @@ impl DollarCostAveraging {
         }
 
         let is_first_position = last_position_datetime.is_none();
-        if is_first_position == true {
-            return Ok(position);
+        if is_first_position {
+            return Ok(Some(order));
         }
 
         let next_position_datetime = last_position_datetime.unwrap() + self.interval_duration;
         let is_wait_done = now.ge(&next_position_datetime);
-        if is_wait_done == true {
-            return Ok(position);
+        if is_wait_done {
+            return Ok(Some(order));
         }
 
         Err(DollarCostAveragingError::NeedToWait(
@@ -101,37 +98,39 @@ mod tests {
     }
 
     #[test]
-    fn dollar_cost_averaging_check_new_position_first() {
+    fn dollar_cost_averaging_check_new_order_first() {
         let dca = _dollar_cost_averaging_new();
-        let result = dca.check_new_position(&None, 1000f64);
+        let result = dca.check_new_order(&None, 1000f64);
 
         assert!(result.is_ok());
-        let position = result.unwrap();
+        let order = result.unwrap();
+        assert!(order.is_some());
+        let order = order.unwrap();
 
-        assert_eq!(position.asset_sell, dca.sell_asset);
-        assert_eq!(position.asset_buy, dca.buy_asset);
-        assert_eq!(position.quantity_sell, dca.interval_sell_quantity);
-        assert_eq!(position.quantity_min_buy, 0f64);
+        assert_eq!(order.asset_sell, dca.sell_asset);
+        assert_eq!(order.asset_buy, dca.buy_asset);
+        assert_eq!(order.quantity_sell, dca.interval_sell_quantity);
     }
 
     #[test]
-    fn dollar_cost_averaging_check_new_position_success() {
+    fn dollar_cost_averaging_check_new_order_success() {
         let dca = _dollar_cost_averaging_new();
-        let result = dca.check_new_position(&Some(Utc::now() - Duration::days(8)), 1000f64);
+        let result = dca.check_new_order(&Some(Utc::now() - Duration::days(8)), 1000f64);
 
         assert!(result.is_ok());
-        let position = result.unwrap();
+        let order = result.unwrap();
+        assert!(order.is_some());
+        let order = order.unwrap();
 
-        assert_eq!(position.asset_sell, dca.sell_asset);
-        assert_eq!(position.asset_buy, dca.buy_asset);
-        assert_eq!(position.quantity_sell, dca.interval_sell_quantity);
-        assert_eq!(position.quantity_min_buy, 0f64);
+        assert_eq!(order.asset_sell, dca.sell_asset);
+        assert_eq!(order.asset_buy, dca.buy_asset);
+        assert_eq!(order.quantity_sell, dca.interval_sell_quantity);
     }
 
     #[test]
-    fn dollar_cost_averaging_check_new_position_wait() {
+    fn dollar_cost_averaging_check_new_order_wait() {
         let dca = _dollar_cost_averaging_new();
-        let result = dca.check_new_position(
+        let result = dca.check_new_order(
             &Some(Utc::now() - Duration::days(6) - Duration::hours(23) - Duration::minutes(59)),
             1000f64,
         );
@@ -141,9 +140,9 @@ mod tests {
     }
 
     #[test]
-    fn dollar_cost_averaging_check_new_position_not_enough() {
+    fn dollar_cost_averaging_check_new_order_not_enough() {
         let dca = _dollar_cost_averaging_new();
-        let result = dca.check_new_position(&Some(Utc::now() - Duration::days(8)), 499f64);
+        let result = dca.check_new_order(&Some(Utc::now() - Duration::days(8)), 499f64);
 
         assert!(result.is_err());
         assert_eq!(

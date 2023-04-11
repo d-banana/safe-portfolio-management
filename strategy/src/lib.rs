@@ -1,2 +1,3 @@
 pub use core::*;
-mod dollar_cost_averaging;
+pub mod constant_proportion_portfolio_insurance;
+pub mod dollar_cost_averaging;
