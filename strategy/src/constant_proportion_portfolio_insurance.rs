@@ -170,4 +170,29 @@ mod tests {
         assert_eq!(order.asset_buy, cppi.safe_asset);
         assert_eq!(order.quantity_sell, 12f64 / 9f64);
     }
+
+    #[test]
+    fn constant_proportion_portfolio_insurance_new_order_liquidation() {
+        let cppi = _constant_proportion_portfolio_insurance_new();
+        let result = cppi.check_new_order(6f64, 40f64, 1f64);
+
+        assert!(result.is_ok());
+        let order = result.unwrap();
+        assert!(order.is_some());
+        let order = order.unwrap();
+
+        assert_eq!(order.asset_sell, cppi.risky_asset);
+        assert_eq!(order.asset_buy, cppi.safe_asset);
+        assert_eq!(order.quantity_sell, 6f64);
+    }
+
+    #[test]
+    fn constant_proportion_portfolio_insurance_new_order_full_exposure() {
+        let cppi = _constant_proportion_portfolio_insurance_new();
+        let result = cppi.check_new_order(10f64, 0f64, 18f64);
+
+        assert!(result.is_ok());
+        let order = result.unwrap();
+        assert!(order.is_none());
+    }
 }
