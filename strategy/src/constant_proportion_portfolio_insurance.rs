@@ -35,7 +35,7 @@ impl ConstantProportionPortfolioInsurance {
         }
     }
 
-    pub fn check_new_position(
+    pub fn check_new_order(
         &self,
         risky_hold_quantity: Risky,
         safe_hold_quantity: Safe,
@@ -93,8 +93,8 @@ mod tests {
     fn _constant_proportion_portfolio_insurance_new() -> ConstantProportionPortfolioInsurance {
         let risky_asset = Asset::new(String::from("ETH"), String::from("Ether"));
         let safe_asset = Asset::new(String::from("LUSD"), String::from("Liquity USD"));
-        let multiplier = 2f64;
-        let min_safe_quantity: Safe = 20f64;
+        let multiplier = 3f64;
+        let min_safe_quantity: Safe = 80f64;
 
         let cppi = ConstantProportionPortfolioInsurance::new(
             risky_asset,
@@ -108,6 +108,66 @@ mod tests {
     #[test]
     fn constant_proportion_portfolio_insurance_new() {
         let cppi = _constant_proportion_portfolio_insurance_new();
-        assert_eq!(cppi.min_safe_quantity, 20f64);
+        assert_eq!(cppi.min_safe_quantity, 80f64);
+    }
+
+    #[test]
+    fn constant_proportion_portfolio_insurance_new_order_no_exposure() {
+        let cppi = _constant_proportion_portfolio_insurance_new();
+        let result = cppi.check_new_order(0f64, 100f64, 10f64);
+
+        assert!(result.is_ok());
+        let order = result.unwrap();
+        assert!(order.is_some());
+        let order = order.unwrap();
+
+        assert_eq!(order.asset_sell, cppi.safe_asset);
+        assert_eq!(order.asset_buy, cppi.risky_asset);
+        assert_eq!(order.quantity_sell, 60f64);
+    }
+
+    #[test]
+    fn constant_proportion_portfolio_insurance_new_order_not_enough_exposure() {
+        let cppi = _constant_proportion_portfolio_insurance_new();
+        let result = cppi.check_new_order(3f64, 70f64, 10f64);
+
+        assert!(result.is_ok());
+        let order = result.unwrap();
+        assert!(order.is_some());
+        let order = order.unwrap();
+
+        assert_eq!(order.asset_sell, cppi.safe_asset);
+        assert_eq!(order.asset_buy, cppi.risky_asset);
+        assert_eq!(order.quantity_sell, 30f64);
+    }
+
+    #[test]
+    fn constant_proportion_portfolio_insurance_new_order_not_enough_exposure_price() {
+        let cppi = _constant_proportion_portfolio_insurance_new();
+        let result = cppi.check_new_order(6f64, 40f64, 20f64);
+
+        assert!(result.is_ok());
+        let order = result.unwrap();
+        assert!(order.is_some());
+        let order = order.unwrap();
+
+        assert_eq!(order.asset_sell, cppi.safe_asset);
+        assert_eq!(order.asset_buy, cppi.risky_asset);
+        assert_eq!(order.quantity_sell, 40f64);
+    }
+
+    #[test]
+    fn constant_proportion_portfolio_insurance_new_order_reduce_exposure() {
+        let cppi = _constant_proportion_portfolio_insurance_new();
+        let result = cppi.check_new_order(6f64, 40f64, 9f64);
+
+        assert!(result.is_ok());
+        let order = result.unwrap();
+        assert!(order.is_some());
+        let order = order.unwrap();
+
+        assert_eq!(order.asset_sell, cppi.risky_asset);
+        assert_eq!(order.asset_buy, cppi.safe_asset);
+        assert_eq!(order.quantity_sell, 12f64 / 9f64);
     }
 }
