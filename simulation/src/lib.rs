@@ -1,14 +1,23 @@
-pub fn add(left: usize, right: usize) -> usize {
-    left + right
-}
+use crate::market::Hloc;
+use crate::runner::Runner;
+use chrono::{DateTime, Duration, TimeZone, Utc};
+pub use core::*;
 
-#[cfg(test)]
-mod tests {
-    use super::*;
+mod maker;
+mod runner;
+mod taker;
 
-    #[test]
-    fn it_works() {
-        let result = add(2, 2);
-        assert_eq!(result, 4);
+pub fn generate_price_graph() -> Vec<(DateTime<Utc>, f64)> {
+    let mut runner = Runner::new(200 * 24 * 60 * 60 * 1000, 0.001, 1_900.0).unwrap();
+
+    let ticks = runner.run().unwrap();
+    let hlocs = Hloc::from_tick_vec(ticks, 4 * 60 * 60 * 1000).unwrap();
+    let mut price_chart = Vec::new();
+    for hloc in &hlocs {
+        price_chart.push((
+            DateTime::<Utc>::MIN_UTC + Duration::milliseconds(hloc.time),
+            hloc.open,
+        ));
     }
+    price_chart
 }
