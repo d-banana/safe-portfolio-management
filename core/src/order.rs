@@ -1,6 +1,4 @@
 use crate::asset::Asset;
-use chrono::prelude::*;
-use ethers::types::{Address, TxHash};
 
 /// Sell a given quantity of asset A for the best price available of asset B.
 #[derive(PartialEq, Debug, Clone)]

@@ -1,31 +1,38 @@
+use crate::actor::*;
 use crate::market::{Tick, TickError};
-use crate::market_state::*;
 use rand::rngs::ThreadRng;
 use rand::{thread_rng, Rng};
 use thiserror::Error;
 
 #[derive(Error, Debug, PartialEq)]
 pub enum RunnerError {
-    #[error("Tick error{0}")]
+    #[error("Price increment should be greater than 0 ({0})")]
+    PriceIncrementCantBeZeroNegative(f64),
+    #[error("Duration between trade range ms should be greater than zero and first entry smaller than second ({0} => {1})")]
+    DurationBetweenTradeRangeMsIncorrect(u64, u64),
+    #[error("Duration between market state range ms should be greater than zero and first entry smaller than second ({0} => {1})")]
+    DurationBetweenMarketStateRangeMsIncorrect(u64, u64),
+    #[error(
+    "Volume base range should be greater than zero and first entry smaller than second ({0} => {1})"
+    )]
+    VolumeBaseRangeIncorrect(f64, f64),
+    #[error(
+    "Liquidity change by tick range should be greater than zero and first entry smaller than second ({0} => {1})"
+    )]
+    LiquidityChangeByTickRangeIncorrect(f64, f64),
+    #[error("Actor Liquidity amplifier should be greater than zero ({0})")]
+    ActorLiquidityAmplifierCantBeZeroNegative(f64),
+    #[error("Current price should be greater than price increment ({0} > {1})")]
+    CurrentPriceCantBeLessThanIncrement(f64, f64),
+    #[error("Tick error {0}")]
     Tick(TickError),
-}
-
-/// Define a taker buyer/seller vs maker seller/buyer
-/// market_volume is how much will be buy/sell
-/// limit_volume_by_tick is how much the take is willing to sell/buy at best price
-/// if there is not enough volume to absorb the taker volume we can move to the next tick,
-/// and increase the limit_volume_by_tick with limit_volume_change_by_tick
-struct Actors {
-    market_volume: f64,
-    limit_volume_by_tick: f64,
-    limit_volume_change_by_tick: f64,
+    #[error("Actors error {0}")]
+    Actor(ActorsError),
 }
 
 /// Config to run a market simulation
 pub struct Runner {
-    pub end_time_ms: u64,
     pub price_increment: f64,
-    pub start_price: f64,
     pub duration_between_trade_range_ms: (u64, u64),
     pub duration_between_market_state_range_ms: (u64, u64),
     pub volume_base_range: (f64, f64),
@@ -35,64 +42,111 @@ pub struct Runner {
 
 impl Runner {
     pub fn new(
-        end_time_ms: u64,
         price_increment: f64,
-        start_price: f64,
         duration_between_trade_range_ms: (u64, u64),
         duration_between_market_state_range_ms: (u64, u64),
         volume_base_range: (f64, f64),
         liquidity_change_by_tick_range: (f64, f64),
         actor_liquidity_amplifier: f64,
-    ) -> Self {
-        Self {
-            end_time_ms,
+    ) -> Result<Self, RunnerError> {
+        let is_price_increment_gt_zero = price_increment > 0.0;
+        if !is_price_increment_gt_zero {
+            return Err(RunnerError::PriceIncrementCantBeZeroNegative(
+                price_increment,
+            ));
+        }
+
+        let is_duration_gt_zero = duration_between_trade_range_ms.0 > 0;
+        let is_range_ascending =
+            duration_between_trade_range_ms.0 < duration_between_trade_range_ms.1;
+        if !(is_duration_gt_zero && is_range_ascending) {
+            return Err(RunnerError::DurationBetweenTradeRangeMsIncorrect(
+                duration_between_trade_range_ms.0,
+                duration_between_trade_range_ms.1,
+            ));
+        }
+
+        let is_duration_gt_zero = duration_between_market_state_range_ms.0 > 0;
+        let is_range_ascending =
+            duration_between_market_state_range_ms.0 < duration_between_market_state_range_ms.1;
+        if !(is_duration_gt_zero && is_range_ascending) {
+            return Err(RunnerError::DurationBetweenMarketStateRangeMsIncorrect(
+                duration_between_market_state_range_ms.0,
+                duration_between_market_state_range_ms.1,
+            ));
+        }
+
+        let is_volume_gt_zero = volume_base_range.0 > 0.0;
+        let is_range_ascending = volume_base_range.0 < volume_base_range.1;
+        if !(is_volume_gt_zero && is_range_ascending) {
+            return Err(RunnerError::VolumeBaseRangeIncorrect(
+                volume_base_range.0,
+                volume_base_range.1,
+            ));
+        }
+
+        let is_volume_gt_zero = liquidity_change_by_tick_range.0 > 0.0;
+        let is_range_ascending =
+            liquidity_change_by_tick_range.0 < liquidity_change_by_tick_range.1;
+        if !(is_volume_gt_zero && is_range_ascending) {
+            return Err(RunnerError::LiquidityChangeByTickRangeIncorrect(
+                liquidity_change_by_tick_range.0,
+                liquidity_change_by_tick_range.1,
+            ));
+        }
+
+        let is_liquidity_amplifier_gt_zero = actor_liquidity_amplifier > 0.0;
+        if !is_liquidity_amplifier_gt_zero {
+            return Err(RunnerError::ActorLiquidityAmplifierCantBeZeroNegative(
+                actor_liquidity_amplifier,
+            ));
+        }
+
+        Ok(Self {
             price_increment,
-            start_price,
             duration_between_trade_range_ms,
             duration_between_market_state_range_ms,
             volume_base_range,
             liquidity_change_by_tick_range,
             actor_liquidity_amplifier,
-        }
+        })
     }
     pub fn default() -> Self {
-        Self {
-            end_time_ms: 200 * 24 * 60 * 60 * 1000,
-            price_increment: 0.1,
-            start_price: 1_000.0,
-            duration_between_trade_range_ms: (15, 30_000),
-            duration_between_market_state_range_ms: (
-                14 * 24 * 60 * 60 * 1000,
-                90 * 24 * 60 * 60 * 1000,
-            ),
-            volume_base_range: (0.01, 1.0),
-            liquidity_change_by_tick_range: (0.01, 1.0),
-            actor_liquidity_amplifier: 1.005,
-        }
+        Runner::new(
+            0.1,
+            (15, 30_000),
+            (14 * 24 * 60 * 60 * 1000, 90 * 24 * 60 * 60 * 1000),
+            (0.01, 1.0),
+            (0.01, 1.0),
+            1.005,
+        )
+        .unwrap()
     }
     pub fn run(
         &mut self,
         mut current_time_ms: u64,
+        end_time_ms: u64,
         mut current_price: f64,
     ) -> Result<Vec<Tick>, RunnerError> {
         let mut rng = thread_rng();
         let mut ticks: Vec<Tick> = Vec::new();
 
-        while current_time_ms < self.end_time_ms {
-            let current_market_state = MARKET_STATE::MB_EQUAL_LS_MS_EQUAL_LB;
+        while current_time_ms < end_time_ms {
+            let current_actor_power =
+                ActorPower::new(ActorPowerState::EQUAL, ActorPowerState::EQUAL);
             let current_duration_market_state_ms = rng
                 .gen_range(
                     self.duration_between_market_state_range_ms.0
                         ..=self.duration_between_market_state_range_ms.1,
                 )
-                .min(self.end_time_ms - current_time_ms);
-            ticks.append(&mut make_ticks_for_market_state(
+                .min(end_time_ms - current_time_ms);
+            ticks.append(&mut Runner::make_ticks_for_actor_power(
                 self,
                 &mut rng,
                 current_time_ms,
                 current_price,
                 current_duration_market_state_ms,
-                &current_market_state,
+                &current_actor_power,
             )?);
 
             current_time_ms += current_duration_market_state_ms;
@@ -103,114 +157,301 @@ impl Runner {
 
         Ok(ticks)
     }
-}
 
-fn make_ticks_for_market_state(
-    _runner: &Runner,
-    _rng: &mut ThreadRng,
-    _current_time_ms: u64,
-    _current_price: f64,
-    _current_duration_market_state_ms: u64,
-    _current_market_state: &MARKET_STATE,
-) -> Result<Vec<Tick>, RunnerError> {
-    let mut ticks: Vec<Tick> = Vec::new();
-    let end_time_market_state_ms = _current_time_ms + _current_duration_market_state_ms;
-    let mut current_time_market_state_ms = _current_time_ms;
-    let mut current_price = _current_price;
+    fn make_ticks_for_actor_power(
+        _runner: &Runner,
+        _rng: &mut ThreadRng,
+        _current_time_ms: u64,
+        _current_price: f64,
+        _current_duration_market_state_ms: u64,
+        _current_actor_power: &ActorPower,
+    ) -> Result<Vec<Tick>, RunnerError> {
+        let mut ticks: Vec<Tick> = Vec::new();
+        let end_time_market_state_ms = _current_time_ms + _current_duration_market_state_ms;
+        let mut current_time_market_state_ms = _current_time_ms;
+        let mut current_price = _current_price;
 
-    while current_time_market_state_ms < end_time_market_state_ms {
-        let is_buy = _rng.gen_bool(0.5);
-        let actors = make_actors(_runner, _rng, _current_market_state, is_buy);
+        while current_time_market_state_ms < end_time_market_state_ms {
+            let is_buy = _rng.gen_bool(0.5);
+            let actors = Runner::make_actors(_runner, _rng, _current_actor_power, is_buy)?;
 
-        ticks.append(&mut make_ticks_for_actors(
-            _runner,
-            &actors,
-            current_time_market_state_ms,
-            current_price,
-            is_buy,
-        )?);
+            ticks.append(&mut Runner::make_ticks_for_actors(
+                _runner,
+                &actors,
+                current_time_market_state_ms,
+                current_price,
+                is_buy,
+            )?);
 
-        if let Some(tick) = ticks.last() {
-            current_price = tick.price;
-        };
-        current_time_market_state_ms += _rng.gen_range(
-            _runner.duration_between_trade_range_ms.0..=_runner.duration_between_trade_range_ms.1,
-        );
-    }
-
-    Ok(ticks)
-}
-
-fn make_ticks_for_actors(
-    _runner: &Runner,
-    _actors: &Actors,
-    _current_time_ms: u64,
-    _current_price: f64,
-    is_buy: bool,
-) -> Result<Vec<Tick>, RunnerError> {
-    let mut ticks: Vec<Tick> = Vec::new();
-    let mut market_volume_left = _actors.market_volume;
-    let mut limit_volume_left = _actors.limit_volume_by_tick;
-    let mut current_price = _current_price;
-
-    while market_volume_left > 0.0 && current_price > _runner.price_increment {
-        let is_liquidity_consumed = market_volume_left > limit_volume_left;
-        let volume = market_volume_left.min(limit_volume_left);
-        market_volume_left -= volume;
-
-        ticks.push(
-            Tick::new(current_price, _current_time_ms as i64, volume, is_buy)
-                .map_err(|e| RunnerError::Tick(e))?,
-        );
-        if is_liquidity_consumed {
-            current_price = if is_buy {
-                current_price + _runner.price_increment
-            } else {
-                current_price - _runner.price_increment
+            if let Some(tick) = ticks.last() {
+                current_price = tick.price;
             };
-            limit_volume_left += _actors.limit_volume_change_by_tick;
+            current_time_market_state_ms += _rng.gen_range(
+                _runner.duration_between_trade_range_ms.0
+                    ..=_runner.duration_between_trade_range_ms.1,
+            );
         }
+
+        Ok(ticks)
     }
-    Ok(ticks)
+
+    pub fn make_ticks_for_actors(
+        _runner: &Runner,
+        _actors: &Actors,
+        _current_time_ms: u64,
+        _current_price: f64,
+        is_buy: bool,
+    ) -> Result<Vec<Tick>, RunnerError> {
+        let is_current_price_gt_price_increment = _current_price > _runner.price_increment;
+        if !is_current_price_gt_price_increment {
+            return Err(RunnerError::CurrentPriceCantBeLessThanIncrement(
+                _current_price,
+                _runner.price_increment,
+            ));
+        }
+
+        let mut ticks: Vec<Tick> = Vec::new();
+        let mut market_volume_left = _actors.market_volume;
+        let mut limit_volume_left = _actors.limit_volume_by_tick;
+        let mut current_price = _current_price;
+
+        while market_volume_left > 0.0 && current_price > _runner.price_increment {
+            let is_liquidity_consumed = market_volume_left > limit_volume_left;
+            let volume = market_volume_left.min(limit_volume_left);
+            market_volume_left -= volume;
+
+            ticks.push(
+                Tick::new(current_price, _current_time_ms as i64, volume, is_buy)
+                    .map_err(|e| RunnerError::Tick(e))?,
+            );
+            if is_liquidity_consumed {
+                current_price = if is_buy {
+                    current_price + _runner.price_increment
+                } else {
+                    current_price - _runner.price_increment
+                };
+                limit_volume_left += _actors.limit_volume_change_by_tick;
+            }
+        }
+        Ok(ticks)
+    }
+
+    pub fn make_actors(
+        _runner: &Runner,
+        _rng: &mut ThreadRng,
+        _current_actor_power: &ActorPower,
+        _is_buy: bool,
+    ) -> Result<Actors, RunnerError> {
+        let actor_power = if _is_buy {
+            &_current_actor_power.market_buyer_vs_limit_seller
+        } else {
+            &_current_actor_power.market_seller_vs_limit_buyer
+        };
+        let mut actors = Actors::new(
+            _rng.gen_range(_runner.volume_base_range.0..=_runner.volume_base_range.1),
+            _rng.gen_range(_runner.volume_base_range.0..=_runner.volume_base_range.1),
+            _rng.gen_range(
+                _runner.liquidity_change_by_tick_range.0..=_runner.liquidity_change_by_tick_range.1,
+            ),
+        )
+        .map_err(|e| RunnerError::Actor(e))?;
+
+        match actor_power {
+            ActorPowerState::LESS => {
+                actors.market_volume /= _runner.actor_liquidity_amplifier;
+                actors.limit_volume_by_tick *= _runner.actor_liquidity_amplifier;
+                actors.limit_volume_change_by_tick *= _runner.actor_liquidity_amplifier;
+            }
+            ActorPowerState::EQUAL => {}
+            ActorPowerState::GREATER => {
+                actors.market_volume *= _runner.actor_liquidity_amplifier;
+                actors.limit_volume_by_tick /= _runner.actor_liquidity_amplifier;
+                actors.limit_volume_change_by_tick /= _runner.actor_liquidity_amplifier;
+            }
+        }
+        Ok(actors)
+    }
 }
 
-fn make_actors(
-    _runner: &Runner,
-    _rng: &mut ThreadRng,
-    _current_market_state: &MARKET_STATE,
-    _is_buy: bool,
-) -> Actors {
-    let actor_power = if _is_buy {
-        _current_market_state
-            .actor_power()
-            .market_buyer_vs_limit_seller
-    } else {
-        _current_market_state
-            .actor_power()
-            .market_seller_vs_limit_buyer
-    };
+#[cfg(test)]
+mod tests {
+    use super::*;
 
-    let mut actors = Actors {
-        market_volume: _rng.gen_range(_runner.volume_base_range.0..=_runner.volume_base_range.1),
-        limit_volume_by_tick: _rng
-            .gen_range(_runner.volume_base_range.0..=_runner.volume_base_range.1),
-        limit_volume_change_by_tick: _rng.gen_range(
-            _runner.liquidity_change_by_tick_range.0..=_runner.liquidity_change_by_tick_range.1,
-        ),
-    };
+    #[test]
+    fn runner_new() {
+        let runner = Runner::default();
+        assert_eq!(runner.price_increment, 0.1);
+        assert_eq!(runner.duration_between_trade_range_ms, (15, 30_000));
+        assert_eq!(
+            runner.duration_between_market_state_range_ms,
+            (14 * 24 * 60 * 60 * 1000, 90 * 24 * 60 * 60 * 1000)
+        );
+        assert_eq!(runner.volume_base_range, (0.01, 1.0));
+        assert_eq!(runner.liquidity_change_by_tick_range, (0.01, 1.0));
+        assert_eq!(runner.actor_liquidity_amplifier, 1.005);
+    }
 
-    match actor_power {
-        ACTOR_POWER_STATE::LESS => {
-            actors.market_volume /= _runner.actor_liquidity_amplifier;
-            actors.limit_volume_by_tick *= _runner.actor_liquidity_amplifier;
-            actors.limit_volume_change_by_tick *= _runner.actor_liquidity_amplifier;
-        }
-        ACTOR_POWER_STATE::EQUAL => {}
-        ACTOR_POWER_STATE::GREATER => {
-            actors.market_volume *= _runner.actor_liquidity_amplifier;
-            actors.limit_volume_by_tick /= _runner.actor_liquidity_amplifier;
-            actors.limit_volume_change_by_tick /= _runner.actor_liquidity_amplifier;
+    fn _assert_equal_in_range(actors: Result<Actors, RunnerError>, runner: &Runner) {
+        assert!(actors.is_ok());
+        let actors = actors.unwrap();
+        assert!(
+            actors.market_volume >= runner.volume_base_range.0
+                && actors.market_volume <= runner.volume_base_range.1
+        );
+        assert!(
+            actors.limit_volume_by_tick >= runner.volume_base_range.0
+                && actors.limit_volume_by_tick <= runner.volume_base_range.1
+        );
+        assert!(
+            actors.limit_volume_change_by_tick >= runner.liquidity_change_by_tick_range.0
+                && actors.limit_volume_change_by_tick <= runner.liquidity_change_by_tick_range.1
+        );
+    }
+
+    fn _assert_greater_in_range(actors: Result<Actors, RunnerError>, runner: &Runner) {
+        assert!(actors.is_ok());
+        let actors = actors.unwrap();
+        assert!(
+            actors.market_volume >= runner.volume_base_range.0 * runner.actor_liquidity_amplifier
+                && actors.market_volume
+                    <= runner.volume_base_range.1 * runner.actor_liquidity_amplifier
+        );
+        assert!(
+            actors.limit_volume_by_tick
+                >= runner.volume_base_range.0 / runner.actor_liquidity_amplifier
+                && actors.limit_volume_by_tick
+                    <= runner.volume_base_range.1 / runner.actor_liquidity_amplifier
+        );
+        assert!(
+            actors.limit_volume_by_tick
+                >= runner.liquidity_change_by_tick_range.0 / runner.actor_liquidity_amplifier
+                && actors.limit_volume_by_tick
+                    <= runner.liquidity_change_by_tick_range.1 / runner.actor_liquidity_amplifier
+        );
+    }
+
+    fn _assert_less_in_range(actors: Result<Actors, RunnerError>, runner: &Runner) {
+        assert!(actors.is_ok());
+        let actors = actors.unwrap();
+        assert!(
+            actors.market_volume >= runner.volume_base_range.0 / runner.actor_liquidity_amplifier
+                && actors.market_volume
+                    <= runner.volume_base_range.1 / runner.actor_liquidity_amplifier
+        );
+        assert!(
+            actors.limit_volume_by_tick
+                >= runner.volume_base_range.0 * runner.actor_liquidity_amplifier
+                && actors.limit_volume_by_tick
+                    <= runner.volume_base_range.1 * runner.actor_liquidity_amplifier
+        );
+        assert!(
+            actors.limit_volume_by_tick
+                >= runner.liquidity_change_by_tick_range.0 * runner.actor_liquidity_amplifier
+                && actors.limit_volume_by_tick
+                    <= runner.liquidity_change_by_tick_range.1 * runner.actor_liquidity_amplifier
+        );
+    }
+
+    #[test]
+    fn maker_actors_success() {
+        let mut rng = thread_rng();
+        let runner = Runner::default();
+        for _i in 0..1_000 {
+            let is_buy = rng.gen_bool(0.5);
+            let actors = Runner::make_actors(
+                &runner,
+                &mut rng,
+                &ActorPower::new(ActorPowerState::EQUAL, ActorPowerState::EQUAL),
+                is_buy,
+            );
+            _assert_equal_in_range(actors, &runner);
+            let actors = Runner::make_actors(
+                &runner,
+                &mut rng,
+                &ActorPower::new(ActorPowerState::GREATER, ActorPowerState::GREATER),
+                is_buy,
+            );
+            _assert_greater_in_range(actors, &runner);
+            let actors = Runner::make_actors(
+                &runner,
+                &mut rng,
+                &ActorPower::new(ActorPowerState::LESS, ActorPowerState::LESS),
+                is_buy,
+            );
+            _assert_less_in_range(actors, &runner);
+
+            let actors = Runner::make_actors(
+                &runner,
+                &mut rng,
+                &ActorPower::new(ActorPowerState::EQUAL, ActorPowerState::LESS),
+                is_buy,
+            );
+            if is_buy {
+                _assert_equal_in_range(actors, &runner);
+            } else {
+                _assert_less_in_range(actors, &runner);
+            }
+            let actors = Runner::make_actors(
+                &runner,
+                &mut rng,
+                &ActorPower::new(ActorPowerState::EQUAL, ActorPowerState::GREATER),
+                is_buy,
+            );
+            if is_buy {
+                _assert_equal_in_range(actors, &runner);
+            } else {
+                _assert_greater_in_range(actors, &runner);
+            }
+            let actors = Runner::make_actors(
+                &runner,
+                &mut rng,
+                &ActorPower::new(ActorPowerState::GREATER, ActorPowerState::EQUAL),
+                is_buy,
+            );
+            if is_buy {
+                _assert_greater_in_range(actors, &runner);
+            } else {
+                _assert_equal_in_range(actors, &runner);
+            }
+            let actors = Runner::make_actors(
+                &runner,
+                &mut rng,
+                &ActorPower::new(ActorPowerState::GREATER, ActorPowerState::LESS),
+                is_buy,
+            );
+            if is_buy {
+                _assert_greater_in_range(actors, &runner);
+            } else {
+                _assert_less_in_range(actors, &runner);
+            }
+            let actors = Runner::make_actors(
+                &runner,
+                &mut rng,
+                &ActorPower::new(ActorPowerState::LESS, ActorPowerState::EQUAL),
+                is_buy,
+            );
+            if is_buy {
+                _assert_less_in_range(actors, &runner);
+            } else {
+                _assert_equal_in_range(actors, &runner);
+            }
+            let actors = Runner::make_actors(
+                &runner,
+                &mut rng,
+                &ActorPower::new(ActorPowerState::LESS, ActorPowerState::GREATER),
+                is_buy,
+            );
+            if is_buy {
+                _assert_less_in_range(actors, &runner);
+            } else {
+                _assert_greater_in_range(actors, &runner);
+            }
         }
     }
-    actors
+
+    #[test]
+    fn make_ticks_for_actors_success() {
+        let runner = Runner::default();
+        assert_eq!(runner.price_increment, 0.1);
+    }
 }

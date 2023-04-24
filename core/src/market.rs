@@ -9,19 +9,21 @@ pub struct Tick {
 
 #[derive(Error, Debug, PartialEq)]
 pub enum TickError {
-    #[error("Price should always be positive...")]
-    PriceShouldPositiveError,
-    #[error("Volume should always be positive...")]
-    VolumeShouldPositiveError,
+    #[error("Price should be greater than 0({0})")]
+    PriceShouldBeGtZero(f64),
+    #[error("Volume should be greater than 0({0})")]
+    VolumeShouldBeGtZero(f64),
 }
 
 impl Tick {
     pub fn new(price: f64, time: i64, volume: f64, is_up: bool) -> Result<Self, TickError> {
-        if price.is_sign_negative() {
-            return Err(TickError::PriceShouldPositiveError);
+        let is_price_gt_zero = price > 0.0;
+        if !is_price_gt_zero {
+            return Err(TickError::PriceShouldBeGtZero(price));
         }
-        if volume.is_sign_negative() {
-            return Err(TickError::VolumeShouldPositiveError);
+        let is_volume_gt_zero = volume > 0.0;
+        if !is_volume_gt_zero {
+            return Err(TickError::VolumeShouldBeGtZero(volume));
         }
         Ok(Self {
             price,
@@ -97,7 +99,7 @@ impl Hloc {
         )?;
 
         for tick in &ticks {
-            let current_slice = (tick.time / duration_millisecond);
+            let current_slice = tick.time / duration_millisecond;
             let is_new_period = current_slice > slice;
             if is_new_period {
                 slice = tick.time / duration_millisecond;
@@ -127,5 +129,21 @@ impl Hloc {
         }
 
         Ok(hlocs)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn tick_new() {
+        let tick = Tick::new(1_000.0, 100, 10.0, true);
+        assert!(tick.is_ok());
+        let tick = tick.unwrap();
+        assert_eq!(tick.price, 1_000.0);
+        assert_eq!(tick.time, 100);
+        assert_eq!(tick.volume, 10.0);
+        assert!(tick.is_up);
     }
 }
