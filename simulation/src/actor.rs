@@ -1,13 +1,14 @@
+use ethers::types::U64;
 use thiserror::Error;
 
 #[derive(Error, Debug, PartialEq)]
 pub enum ActorsError {
     #[error("Market volume should be greater than zero ({0})")]
-    MarketVolumeCantBeZeroNegative(f64),
+    MarketVolumeCantBeZeroNegative(U64),
     #[error("Limit volume by tick should be greater than zero ({0})")]
-    LimitVolumeByTickCantBeZeroNegative(f64),
+    LimitVolumeByTickCantBeZeroNegative(U64),
     #[error("Limit volume change by tick should be greater than zero ({0})")]
-    LimitVolumeChangeByTickCantBeZeroNegative(f64),
+    LimitVolumeChangeByTickCantBeZeroNegative(U64),
 }
 
 /// Define a taker buyer/seller vs maker seller/buyer
@@ -16,29 +17,26 @@ pub enum ActorsError {
 /// if there is not enough volume to absorb the taker volume we can move to the next tick,
 /// and increase the limit_volume_by_tick with limit_volume_change_by_tick
 pub struct Actors {
-    pub market_volume: f64,
-    pub limit_volume_by_tick: f64,
-    pub limit_volume_change_by_tick: f64,
+    pub market_volume: U64,
+    pub limit_volume_by_tick: U64,
+    pub limit_volume_change_by_tick: U64,
 }
 
 impl Actors {
     pub fn new(
-        market_volume: f64,
-        limit_volume_by_tick: f64,
-        limit_volume_change_by_tick: f64,
+        market_volume: U64,
+        limit_volume_by_tick: U64,
+        limit_volume_change_by_tick: U64,
     ) -> Result<Self, ActorsError> {
-        let is_market_volume_gt_zero = market_volume > 0.0;
-        if !is_market_volume_gt_zero {
+        if market_volume.is_zero() {
             return Err(ActorsError::MarketVolumeCantBeZeroNegative(market_volume));
         }
-        let is_limit_volume_by_tick_gt_zero = limit_volume_by_tick > 0.0;
-        if !is_limit_volume_by_tick_gt_zero {
+        if limit_volume_by_tick.is_zero() {
             return Err(ActorsError::LimitVolumeByTickCantBeZeroNegative(
                 limit_volume_by_tick,
             ));
         }
-        let is_limit_volume_change_by_tick_gt_zero = limit_volume_change_by_tick > 0.0;
-        if !is_limit_volume_change_by_tick_gt_zero {
+        if limit_volume_change_by_tick.is_zero() {
             return Err(ActorsError::LimitVolumeChangeByTickCantBeZeroNegative(
                 limit_volume_change_by_tick,
             ));
@@ -49,6 +47,14 @@ impl Actors {
             limit_volume_by_tick,
             limit_volume_change_by_tick,
         })
+    }
+    pub fn default() -> Actors {
+        Actors::new(
+            U64::from(100) * U64::exp10(6),
+            U64::from(100) * U64::exp10(6),
+            U64::from(10) * U64::exp10(6),
+        )
+        .unwrap()
     }
 }
 
@@ -82,12 +88,19 @@ mod tests {
 
     #[test]
     fn actors_new() {
-        let actors = Actors::new(1.0, 1.1, 0.1);
+        let actors = Actors::new(
+            U64::from(100) * U64::exp10(6),
+            U64::from(110) * U64::exp10(6),
+            U64::from(10) * U64::exp10(6),
+        );
         assert!(actors.is_ok());
         let actors = actors.unwrap();
-        assert_eq!(actors.market_volume, 1.0);
-        assert_eq!(actors.limit_volume_by_tick, 1.1);
-        assert_eq!(actors.limit_volume_change_by_tick, 0.1);
+        assert_eq!(actors.market_volume, U64::from(100) * U64::exp10(6));
+        assert_eq!(actors.limit_volume_by_tick, U64::from(110) * U64::exp10(6));
+        assert_eq!(
+            actors.limit_volume_change_by_tick,
+            U64::from(10) * U64::exp10(6)
+        );
     }
 
     #[test]

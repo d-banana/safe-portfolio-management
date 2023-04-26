@@ -8,5 +8,6 @@ edition = "2021"
 [dependencies]
 chrono = "0.4.24"
 rand = "0.8.5"
+ethers = "2.0.2"
 thiserror = "1.0.40"
 core = {path= "../core"}
