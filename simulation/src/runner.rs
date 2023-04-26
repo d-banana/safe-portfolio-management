@@ -304,6 +304,8 @@ impl Runner {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::collections::HashMap;
+    use std::ops::Add;
 
     #[test]
     fn runner_new() {
@@ -577,5 +579,177 @@ mod tests {
         assert_eq!(tick.time, current_time_ms);
         assert_eq!(tick.volume, U64::from(10) * U64::exp10(6));
         assert_eq!(tick.is_up, is_buy);
+        // SELL
+        let is_buy = false;
+        let ticks =
+            Runner::make_ticks_for_actors(&runner, &actors, current_time_ms, current_price, is_buy);
+        assert!(ticks.is_ok());
+        let ticks = ticks.unwrap();
+        assert_eq!(ticks.len(), 3);
+        let tick = ticks.get(0).unwrap();
+        assert_eq!(tick.price, current_price);
+        assert_eq!(tick.time, current_time_ms);
+        assert_eq!(tick.volume, U64::from(100) * U64::exp10(6));
+        assert_eq!(tick.is_up, is_buy);
+        let tick = ticks.get(1).unwrap();
+        assert_eq!(tick.price, current_price - runner.price_increment);
+        assert_eq!(tick.time, current_time_ms);
+        assert_eq!(tick.volume, U64::from(110) * U64::exp10(6));
+        assert_eq!(tick.is_up, is_buy);
+        let tick = ticks.get(2).unwrap();
+        assert_eq!(tick.price, current_price - (runner.price_increment * 2));
+        assert_eq!(tick.time, current_time_ms);
+        assert_eq!(tick.volume, U64::from(10) * U64::exp10(6));
+        assert_eq!(tick.is_up, is_buy);
+    }
+
+    #[test]
+    fn make_ticks_for_actor_power_success() {
+        let mut rng = thread_rng();
+        let runner = Runner::default();
+        let actors = Actors::new(
+            U64::from(220) * U64::exp10(6),
+            U64::from(100) * U64::exp10(6),
+            U64::from(10) * U64::exp10(6),
+        )
+        .unwrap();
+        let current_time_ms: u64 = 42;
+        let current_price = U64::from(1_000) * U64::exp10(6);
+        let current_duration_market_state_ms = 1_000_000;
+        let current_actor_power = ActorPower::new(ActorPowerState::EQUAL, ActorPowerState::EQUAL);
+        let ticks = Runner::make_ticks_for_actor_power(
+            &runner,
+            &mut rng,
+            current_time_ms,
+            current_price,
+            current_duration_market_state_ms,
+            &current_actor_power,
+        );
+
+        assert!(ticks.is_ok());
+        let ticks = ticks.unwrap();
+        let first_tick = ticks.first().unwrap();
+        assert_eq!(first_tick.time, current_time_ms);
+        let last_tick = ticks.last().unwrap();
+        assert!(last_tick.time <= current_time_ms + current_duration_market_state_ms)
+    }
+
+    fn check_average_price(
+        actor_power_a: &ActorPower,
+        actor_power_b: &ActorPower,
+        avg_map: &HashMap<ActorPower, U64>,
+        is_a_gt_b: bool,
+    ) {
+        let a = avg_map.get(&actor_power_a);
+        let b = avg_map.get(&actor_power_b);
+        assert!(a.is_some());
+        assert!(b.is_some());
+        let a = a.unwrap();
+        let b = b.unwrap();
+        if is_a_gt_b {
+            assert!(a > b);
+        } else {
+            assert!(a < b);
+        }
+    }
+
+    #[test]
+    fn make_ticks_for_actor_power_trend() {
+        let mut rng = thread_rng();
+        let runner = Runner::new(
+            U64::from(1) * U64::exp10(5),
+            (15, 30_000),
+            (14 * 24 * 60 * 60 * 1000, 90 * 24 * 60 * 60 * 1000),
+            (U64::from(1) * U64::exp10(6), U64::from(100) * U64::exp10(6)),
+            (U64::from(1) * U64::exp10(6), U64::from(100) * U64::exp10(6)),
+            U64::from(1_008_000),
+        )
+        .unwrap();
+        let actors = Actors::new(
+            U64::from(220) * U64::exp10(6),
+            U64::from(100) * U64::exp10(6),
+            U64::from(10) * U64::exp10(6),
+        )
+        .unwrap();
+        let current_time_ms: u64 = 42;
+        let current_price = U64::from(1_000) * U64::exp10(6);
+        let current_duration_market_state_ms = 14 * 24 * 60 * 60 * 1000;
+        let mut prices_map: HashMap<ActorPower, Vec<U64>> = HashMap::new();
+        let actor_powers = vec![
+            ActorPower::new(ActorPowerState::EQUAL, ActorPowerState::EQUAL), // 0
+            ActorPower::new(ActorPowerState::GREATER, ActorPowerState::GREATER), // 1
+            ActorPower::new(ActorPowerState::LESS, ActorPowerState::LESS),   // 2
+            ActorPower::new(ActorPowerState::EQUAL, ActorPowerState::GREATER), // 3
+            ActorPower::new(ActorPowerState::EQUAL, ActorPowerState::LESS),  // 4
+            ActorPower::new(ActorPowerState::GREATER, ActorPowerState::EQUAL), // 5
+            ActorPower::new(ActorPowerState::GREATER, ActorPowerState::LESS), // 6
+            ActorPower::new(ActorPowerState::LESS, ActorPowerState::EQUAL),  // 7
+            ActorPower::new(ActorPowerState::LESS, ActorPowerState::GREATER), // 8
+        ];
+
+        for actor_power in &actor_powers {
+            for _ in 0..4 {
+                let current_actor_power = actor_power;
+
+                let ticks = Runner::make_ticks_for_actor_power(
+                    &runner,
+                    &mut rng,
+                    current_time_ms,
+                    current_price,
+                    current_duration_market_state_ms,
+                    current_actor_power,
+                );
+                assert!(ticks.is_ok());
+                let ticks = ticks.unwrap();
+                let last_tick = ticks.last().unwrap();
+                let prices = prices_map.get(actor_power);
+                if let None = prices {
+                    prices_map.insert(actor_power.to_owned(), vec![last_tick.price]);
+                    continue;
+                };
+                if let Some(prices) = prices {
+                    let mut prices = prices.to_owned();
+                    prices.push(last_tick.price);
+                    prices_map.insert(actor_power.to_owned(), prices);
+                    continue;
+                };
+            }
+        }
+        let mut avg_map: HashMap<ActorPower, U64> = HashMap::new();
+        for (actor_power, prices) in prices_map.iter() {
+            let mut sum: U64 = U64::zero();
+            for price in prices {
+                sum += price.to_owned();
+            }
+            avg_map.insert(actor_power.to_owned(), sum / prices.len());
+        }
+
+        let crabs = vec![
+            ActorPower::new(ActorPowerState::EQUAL, ActorPowerState::EQUAL),
+            ActorPower::new(ActorPowerState::GREATER, ActorPowerState::GREATER),
+            ActorPower::new(ActorPowerState::LESS, ActorPowerState::LESS),
+        ];
+        let ups = vec![
+            ActorPower::new(ActorPowerState::EQUAL, ActorPowerState::LESS),
+            ActorPower::new(ActorPowerState::GREATER, ActorPowerState::EQUAL),
+            ActorPower::new(ActorPowerState::GREATER, ActorPowerState::LESS),
+        ];
+        let downs = vec![
+            ActorPower::new(ActorPowerState::LESS, ActorPowerState::EQUAL),
+            ActorPower::new(ActorPowerState::EQUAL, ActorPowerState::GREATER),
+            ActorPower::new(ActorPowerState::LESS, ActorPowerState::GREATER),
+        ];
+        for crab in &crabs {
+            for up in &ups {
+                check_average_price(crab, up, &avg_map, false);
+            }
+            for down in &downs {
+                check_average_price(crab, down, &avg_map, true);
+            }
+        }
+        check_average_price(ups.get(0).unwrap(), ups.get(1).unwrap(), &avg_map, false);
+        check_average_price(ups.get(1).unwrap(), ups.get(2).unwrap(), &avg_map, false);
+        check_average_price(downs.get(0).unwrap(), downs.get(1).unwrap(), &avg_map, true);
+        check_average_price(downs.get(1).unwrap(), downs.get(2).unwrap(), &avg_map, true);
     }
 }

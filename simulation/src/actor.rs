@@ -1,4 +1,5 @@
 use ethers::types::U64;
+use std::hash::{Hash, Hasher};
 use thiserror::Error;
 
 #[derive(Error, Debug, PartialEq)]
@@ -58,13 +59,14 @@ impl Actors {
     }
 }
 
-#[derive(Debug, Eq, PartialEq)]
+#[derive(Debug, Eq, PartialEq, Hash, Clone)]
 pub enum ActorPowerState {
     LESS,
     EQUAL,
     GREATER,
 }
 
+#[derive(Eq, PartialEq, Hash, Clone)]
 pub struct ActorPower {
     pub market_buyer_vs_limit_seller: ActorPowerState,
     pub market_seller_vs_limit_buyer: ActorPowerState,
