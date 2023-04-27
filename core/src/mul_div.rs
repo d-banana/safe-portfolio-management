@@ -1,4 +1,4 @@
-use ethers::types::{U256, U64};
+use ethers::types::{I256, U256, U64};
 
 pub fn mul_div_u64(x: U64, mul: U64, div: U64) -> Option<U64> {
     let mul_div: u64 = U256::from(x.as_u64())
@@ -7,6 +7,10 @@ pub fn mul_div_u64(x: U64, mul: U64, div: U64) -> Option<U64> {
         .try_into()
         .ok()?;
     Some(U64::from(mul_div))
+}
+
+pub fn mul_div_i256(x: I256, mul: I256, div: I256) -> Option<I256> {
+    x.checked_mul(mul)?.checked_div(div)
 }
 
 #[cfg(test)]

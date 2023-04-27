@@ -1,7 +1,7 @@
 use crate::actor::*;
 use crate::market::{Tick, TickError};
 use crate::mul_div::*;
-use ethers::types::U64;
+use ethers::types::{I256, U64};
 use rand::rngs::ThreadRng;
 use rand::{thread_rng, Rng};
 use thiserror::Error;
@@ -30,6 +30,14 @@ pub enum RunnerError {
     MarketVolumeMulDivAmplifierOverflow(U64, U64),
     #[error("Limit volume muldiv by actor amplifier overflow ({0} muldiv {1})")]
     LimitVolumeMulDivAmplifierOverflow(U64, U64),
+    #[error("Duration moving average tick should be greater than 0 ({0})")]
+    DurationMovingAverageTickCantBeZeroNegative(usize),
+    #[error("Moving average muldiv by old lend overflow ({0} muldiv {1})")]
+    MovingAverageMulDivLenOverflow(I256, U64),
+    #[error("Last tick doesn't have moving average")]
+    LastTickMovingAverageNone(),
+    #[error("Moving average can't be negative({0})")]
+    MovingAverageIsNegative(I256),
     #[error("Tick error {0}")]
     Tick(TickError),
     #[error("Actors error {0}")]
@@ -44,6 +52,7 @@ pub struct Runner {
     pub volume_base_range: (U64, U64),
     pub liquidity_change_by_tick_range: (U64, U64),
     pub actor_liquidity_amplifier_x1_000_000: U64,
+    pub duration_moving_average_tick: usize,
 }
 
 impl Runner {
@@ -54,6 +63,7 @@ impl Runner {
         volume_base_range: (U64, U64),
         liquidity_change_by_tick_range: (U64, U64),
         actor_liquidity_amplifier_x1_000_000: U64,
+        duration_moving_average_tick: usize,
     ) -> Result<Self, RunnerError> {
         if price_increment.is_zero() {
             return Err(RunnerError::PriceIncrementCantBeZeroNegative(
@@ -104,6 +114,13 @@ impl Runner {
             ));
         }
 
+        let is_duration_ma_tick_gt_zero = duration_moving_average_tick > 0;
+        if !is_duration_ma_tick_gt_zero {
+            return Err(RunnerError::DurationMovingAverageTickCantBeZeroNegative(
+                duration_moving_average_tick,
+            ));
+        }
+
         Ok(Self {
             price_increment,
             duration_between_trade_range_ms,
@@ -111,8 +128,10 @@ impl Runner {
             volume_base_range,
             liquidity_change_by_tick_range,
             actor_liquidity_amplifier_x1_000_000,
+            duration_moving_average_tick,
         })
     }
+
     pub fn default() -> Self {
         Runner::new(
             U64::from(1) * U64::exp10(5),
@@ -121,9 +140,11 @@ impl Runner {
             (U64::from(1) * U64::exp10(6), U64::from(100) * U64::exp10(6)),
             (U64::from(1) * U64::exp10(6), U64::from(100) * U64::exp10(6)),
             U64::from(1_005_000),
+            1_000_000,
         )
         .unwrap()
     }
+
     pub fn run(
         &mut self,
         mut current_time_ms: u64,
@@ -149,6 +170,7 @@ impl Runner {
                 current_price,
                 current_duration_market_state_ms,
                 &current_actor_power,
+                &ticks,
             )?);
 
             current_time_ms += current_duration_market_state_ms;
@@ -160,13 +182,14 @@ impl Runner {
         Ok(ticks)
     }
 
-    fn make_ticks_for_actor_power(
+    pub fn make_ticks_for_actor_power(
         _runner: &Runner,
         _rng: &mut ThreadRng,
         _current_time_ms: u64,
         _current_price: U64,
         _current_duration_market_state_ms: u64,
         _current_actor_power: &ActorPower,
+        _ticks: &Vec<Tick>,
     ) -> Result<Vec<Tick>, RunnerError> {
         let mut ticks: Vec<Tick> = Vec::new();
         let end_time_market_state_ms = _current_time_ms + _current_duration_market_state_ms;
@@ -176,14 +199,17 @@ impl Runner {
         while current_time_market_state_ms < end_time_market_state_ms {
             let is_buy = _rng.gen_bool(0.5);
             let actors = Runner::make_actors(_runner, _rng, _current_actor_power, is_buy)?;
-
-            ticks.append(&mut Runner::make_ticks_for_actors(
+            for tick in Runner::make_ticks_for_actors(
                 _runner,
                 &actors,
                 current_time_market_state_ms,
                 current_price,
                 is_buy,
-            )?);
+            )? {
+                ticks.push(Runner::make_sliding_moving_average_from_ticks(
+                    _runner, _ticks, &ticks, &tick,
+                )?);
+            }
 
             if let Some(tick) = ticks.last() {
                 current_price = tick.price;
@@ -223,7 +249,7 @@ impl Runner {
             market_volume_left -= volume;
 
             ticks.push(
-                Tick::new(current_price, _current_time_ms, volume, is_buy)
+                Tick::new(current_price, _current_time_ms, volume, is_buy, None, None)
                     .map_err(RunnerError::Tick)?,
             );
             if is_liquidity_consumed {
@@ -299,6 +325,98 @@ impl Runner {
         }
         Ok(actors)
     }
+
+    pub fn make_sliding_moving_average_from_ticks(
+        _runner: &Runner,
+        _old_ticks: &Vec<Tick>,
+        _new_ticks: &Vec<Tick>,
+        _new_tick: &Tick,
+    ) -> Result<Tick, RunnerError> {
+        let tick_len = _runner
+            .duration_moving_average_tick
+            .min(_old_ticks.len() + _new_ticks.len());
+
+        let is_ticks_zero = tick_len == 0;
+        if is_ticks_zero {
+            return Runner::make_sliding_moving_average(_runner, &None, &None, tick_len, _new_tick);
+        }
+
+        let mut first_tick = None;
+        if _new_ticks.len() >= _runner.duration_moving_average_tick {
+            first_tick = _new_ticks.get(_new_ticks.len() - _runner.duration_moving_average_tick);
+        } else if _new_ticks.len() + _old_ticks.len() >= _runner.duration_moving_average_tick {
+            first_tick = _old_ticks
+                .get(_old_ticks.len() - (_runner.duration_moving_average_tick - _new_ticks.len()));
+        } else if _old_ticks.is_empty() {
+            first_tick = _new_ticks.first();
+        } else {
+            first_tick = _old_ticks.first();
+        }
+
+        let mut last_tick = None;
+        if !_new_ticks.is_empty() {
+            last_tick = _new_ticks.last();
+        } else {
+            last_tick = _old_ticks.last();
+        }
+
+        Runner::make_sliding_moving_average(_runner, &first_tick, &last_tick, tick_len, _new_tick)
+    }
+
+    pub fn make_sliding_moving_average(
+        _runner: &Runner,
+        _first_tick: &Option<&Tick>,
+        _last_tick: &Option<&Tick>,
+        _tick_len: usize,
+        _new_tick: &Tick,
+    ) -> Result<Tick, RunnerError> {
+        let is_ticks_zero = _tick_len == 0;
+        if is_ticks_zero {
+            let mut tick = _new_tick.clone();
+            tick.moving_average = Some(tick.price);
+            return Ok(tick);
+        }
+        let mut moving_average: I256 = I256::from(_new_tick.price.as_u64());
+
+        if _tick_len == _runner.duration_moving_average_tick {
+            if let Some(tick) = _first_tick {
+                moving_average -= I256::from(tick.price.as_u64());
+            }
+        } else if let Some(tick) = _last_tick {
+            moving_average -= I256::from(
+                tick.moving_average
+                    .ok_or(RunnerError::LastTickMovingAverageNone())?
+                    .as_u64(),
+            );
+        }
+
+        let old_ma_len =
+            U64::from((_tick_len + 1).min(_runner.duration_moving_average_tick)) * U64::exp10(6);
+        moving_average = mul_div_i256(
+            moving_average,
+            I256::exp10(6),
+            I256::from(old_ma_len.as_u64()),
+        )
+        .ok_or(RunnerError::MovingAverageMulDivLenOverflow(
+            moving_average,
+            old_ma_len,
+        ))?;
+
+        moving_average += I256::from(
+            _last_tick
+                .clone()
+                .unwrap()
+                .moving_average
+                .ok_or(RunnerError::LastTickMovingAverageNone())?
+                .as_u64(),
+        );
+        let mut tick = _new_tick.clone();
+        if moving_average.is_negative() {
+            return Err(RunnerError::MovingAverageIsNegative(moving_average));
+        }
+        tick.moving_average = Some(U64::from(moving_average.into_sign_and_abs().1.as_u64()));
+        Ok(tick)
+    }
 }
 
 #[cfg(test)]
@@ -328,6 +446,7 @@ mod tests {
             runner.actor_liquidity_amplifier_x1_000_000,
             U64::from(1_005_000)
         );
+        assert_eq!(runner.duration_moving_average_tick, 10_000);
     }
 
     fn _assert_equal_in_range(actors: Result<Actors, RunnerError>, runner: &Runner) {
@@ -420,7 +539,7 @@ mod tests {
     }
 
     #[test]
-    fn maker_actors_success() {
+    fn make_actors_success() {
         let mut rng = thread_rng();
         let runner = Runner::default();
         for _i in 0..1_000 {
@@ -624,6 +743,7 @@ mod tests {
             current_price,
             current_duration_market_state_ms,
             &current_actor_power,
+            &vec![],
         );
 
         assert!(ticks.is_ok());
@@ -663,6 +783,7 @@ mod tests {
             (U64::from(1) * U64::exp10(6), U64::from(100) * U64::exp10(6)),
             (U64::from(1) * U64::exp10(6), U64::from(100) * U64::exp10(6)),
             U64::from(1_008_000),
+            10_000,
         )
         .unwrap();
         let actors = Actors::new(
@@ -698,6 +819,7 @@ mod tests {
                     current_price,
                     current_duration_market_state_ms,
                     current_actor_power,
+                    &vec![],
                 );
                 assert!(ticks.is_ok());
                 let ticks = ticks.unwrap();
@@ -751,5 +873,102 @@ mod tests {
         check_average_price(ups.get(1).unwrap(), ups.get(2).unwrap(), &avg_map, false);
         check_average_price(downs.get(0).unwrap(), downs.get(1).unwrap(), &avg_map, true);
         check_average_price(downs.get(1).unwrap(), downs.get(2).unwrap(), &avg_map, true);
+    }
+
+    #[test]
+    fn make_moving_average_success() {
+        let runner = Runner::default();
+        let tick = Runner::make_sliding_moving_average(
+            &runner,
+            &Some(
+                &Tick::new(
+                    U64::from(10),
+                    0,
+                    U64::one(),
+                    true,
+                    Some(U64::from(10)),
+                    None,
+                )
+                .unwrap(),
+            ),
+            &Some(
+                &Tick::new(
+                    U64::from(10),
+                    0,
+                    U64::one(),
+                    true,
+                    Some(U64::from(10)),
+                    None,
+                )
+                .unwrap(),
+            ),
+            1,
+            &Tick::new(U64::from(20), 0, U64::one(), true, None, None).unwrap(),
+        );
+        assert!(tick.is_ok());
+        let tick = tick.unwrap();
+        assert!(tick.moving_average.is_some());
+        assert_eq!(tick.moving_average.unwrap(), U64::from(15))
+    }
+
+    #[test]
+    fn make_moving_average_empty() {
+        let runner = Runner::default();
+        let tick = Runner::make_sliding_moving_average(
+            &runner,
+            &None,
+            &None,
+            0,
+            &Tick::new(U64::from(20), 0, U64::one(), true, None, None).unwrap(),
+        );
+        assert!(tick.is_ok());
+        let tick = tick.unwrap();
+        assert!(tick.moving_average.is_some());
+        assert_eq!(tick.moving_average.unwrap(), U64::from(20))
+    }
+
+    #[test]
+    fn make_moving_average_sliding() {
+        let runner = Runner::new(
+            U64::from(1) * U64::exp10(5),
+            (15, 30_000),
+            (14 * 24 * 60 * 60 * 1000, 90 * 24 * 60 * 60 * 1000),
+            (U64::from(1) * U64::exp10(6), U64::from(100) * U64::exp10(6)),
+            (U64::from(1) * U64::exp10(6), U64::from(100) * U64::exp10(6)),
+            U64::from(1_008_000),
+            2,
+        )
+        .unwrap();
+        let tick = Runner::make_sliding_moving_average(
+            &runner,
+            &Some(
+                &Tick::new(
+                    U64::from(10),
+                    0,
+                    U64::one(),
+                    true,
+                    Some(U64::from(10)),
+                    None,
+                )
+                .unwrap(),
+            ),
+            &Some(
+                &Tick::new(
+                    U64::from(20),
+                    0,
+                    U64::one(),
+                    true,
+                    Some(U64::from(15)),
+                    None,
+                )
+                .unwrap(),
+            ),
+            2,
+            &Tick::new(U64::from(30), 0, U64::one(), true, None, None).unwrap(),
+        );
+        assert!(tick.is_ok());
+        let tick = tick.unwrap();
+        assert!(tick.moving_average.is_some());
+        assert_eq!(tick.moving_average.unwrap(), U64::from(25))
     }
 }

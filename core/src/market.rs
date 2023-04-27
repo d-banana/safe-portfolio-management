@@ -1,12 +1,14 @@
 use ethers::types::U64;
 use thiserror::Error;
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct Tick {
     pub price: U64,
     pub time: u64,
     pub volume: U64,
     pub is_up: bool,
+    pub moving_average: Option<U64>,
+    pub variance: Option<U64>,
 }
 
 #[derive(Error, Debug, PartialEq)]
@@ -18,7 +20,14 @@ pub enum TickError {
 }
 
 impl Tick {
-    pub fn new(price: U64, time: u64, volume: U64, is_up: bool) -> Result<Self, TickError> {
+    pub fn new(
+        price: U64,
+        time: u64,
+        volume: U64,
+        is_up: bool,
+        moving_average: Option<U64>,
+        variance: Option<U64>,
+    ) -> Result<Self, TickError> {
         if price.is_zero() {
             return Err(TickError::PriceShouldBeGtZero(price));
         }
@@ -30,6 +39,8 @@ impl Tick {
             time,
             volume,
             is_up,
+            moving_average,
+            variance,
         })
     }
 }
@@ -149,6 +160,8 @@ mod tests {
             100,
             U64::from(10) * U64::exp10(6),
             true,
+            Some(U64::from(800) * U64::exp10(6)),
+            Some(U64::from(50) * U64::exp10(6)),
         );
         assert!(tick.is_ok());
         let tick = tick.unwrap();
@@ -156,6 +169,8 @@ mod tests {
         assert_eq!(tick.time, 100);
         assert_eq!(tick.volume, U64::from(10) * U64::exp10(6));
         assert!(tick.is_up);
+        assert_eq!(tick.moving_average, Some(U64::from(800) * U64::exp10(6)));
+        assert_eq!(tick.variance, Some(U64::from(50) * U64::exp10(6)));
     }
 
     #[test]
