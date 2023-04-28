@@ -1406,4 +1406,47 @@ mod tests {
         assert!(tick.moving_average.is_some());
         assert_eq!(tick.moving_average.unwrap(), U64::from(20));
     }
+    #[test]
+    fn make_variance_success() {
+        let runner = Runner::default();
+        let tick = Runner::make_sliding_variance(
+            &runner,
+            &Some(
+                &Tick::new(
+                    U64::from(10),
+                    0,
+                    U64::one(),
+                    true,
+                    Some(U64::from(10)),
+                    None,
+                )
+                .unwrap(),
+            ),
+            &Some(
+                &Tick::new(
+                    U64::from(10),
+                    0,
+                    U64::one(),
+                    true,
+                    Some(U64::from(10)),
+                    None,
+                )
+                .unwrap(),
+            ),
+            1,
+            &Tick::new(
+                U64::from(20),
+                0,
+                U64::one(),
+                true,
+                Some(U64::from(15)),
+                None,
+            )
+            .unwrap(),
+        );
+        assert!(tick.is_ok());
+        let tick = tick.unwrap();
+        assert!(tick.variance.is_some());
+        assert_eq!(tick.variance.unwrap(), U64::from(25));
+    }
 }
