@@ -33,14 +33,20 @@ pub enum RunnerError {
     LimitVolumeMulDivAmplifierOverflow(U64, U64),
     #[error("Duration moving average tick should be greater than 0 ({0})")]
     DurationMovingAverageTickCantBeZeroNegative(usize),
-    #[error("Moving average muldiv by old lend overflow ({0} muldiv {1})")]
+    #[error("Moving average muldiv by old len overflow ({0} muldiv {1})")]
     MovingAverageMulDivLenOverflow(I256, I256),
-    #[error("Ticks len not zero so first and last tick should be not None.")]
+    #[error("Ticks len not zero so first and last tick price and moving average should be some.")]
     FirstLastTickMovingAverageNone(),
+    #[error("Need the moving average of new tick to compute the variance.")]
+    NewTickMovingAverageForVarianceNone(),
+    #[error("Need the variance of last tick to compute the variance.")]
+    LastTickVarianceNone(),
     #[error("Moving average can't be negative({0})")]
     MovingAverageIsNegative(I256),
     #[error("Need last moving average to compute new variance.")]
     NewTickNoAverageForVariance(),
+    #[error("Variance muldiv by old len overflow ({0} muldiv {1})")]
+    VarianceMulDivLenOverflow(I256, I256),
     #[error("Tick error {0}")]
     Tick(TickError),
     #[error("Actors error {0}")]
@@ -410,30 +416,16 @@ impl Runner {
         _tick_len: usize,
         _new_tick: &Tick,
     ) -> Result<Tick, RunnerError> {
-        enum MovingAverageState {
-            Zero,
-            Add,
-            AddRemove,
-        }
-        let mut state: MovingAverageState = MovingAverageState::Add;
-        let is_ticks_zero = _tick_len == 0;
-        if is_ticks_zero {
-            state = MovingAverageState::Zero;
-        }
-        let is_ticks_max = _tick_len == _runner.duration_moving_average_tick;
-        if is_ticks_max {
-            state = MovingAverageState::AddRemove;
-        }
         let is_first_last_tick_some = _first_tick.is_some()
             && _last_tick.is_some()
             && _first_tick.unwrap().moving_average.is_some()
             && _last_tick.unwrap().moving_average.is_some();
         let mut tick = _new_tick.clone();
-        match state {
-            MovingAverageState::Zero => {
+        match _tick_len {
+            i if i == 0 => {
                 tick.moving_average = Some(tick.price);
             }
-            MovingAverageState::Add => {
+            i if i < _runner.duration_moving_average_tick => {
                 // average_new = old_average + ((new_value - old_average)/new_size)
                 if !is_first_last_tick_some {
                     return Err(RunnerError::FirstLastTickMovingAverageNone());
@@ -448,7 +440,7 @@ impl Runner {
                     )?;
                 tick.moving_average = Some(U64::from(moving_average.abs().as_u64()));
             }
-            MovingAverageState::AddRemove => {
+            _ => {
                 // average_new = old_average + ((new_value - removed_value)/new_size)
                 if !is_first_last_tick_some {
                     return Err(RunnerError::FirstLastTickMovingAverageNone());
@@ -468,61 +460,93 @@ impl Runner {
         Ok(tick)
     }
 
-    /*pub fn make_sliding_variance(
+    pub fn make_sliding_variance(
         _runner: &Runner,
         _first_tick: &Option<&Tick>,
         _last_tick: &Option<&Tick>,
         _tick_len: usize,
         _new_tick: &Tick,
     ) -> Result<Tick, RunnerError> {
-        let is_new_average_computed = _new_tick.moving_average.is_some();
-        if !is_new_average_computed {
-            return Err(RunnerError::NewTickNoAverageForVariance());
-        }
-        let is_ticks_zero = _tick_len == 0;
-        if is_ticks_zero {
-            let mut tick = _new_tick.clone();
-            tick.variance = Some(U64::zero());
-            return Ok(tick);
-        }
-        let mut variance: I256 = (I256::from(_new_tick.price.as_u64())
-            - I256::from(_new_tick.moving_average.unwrap().as_u64()))
-        .pow(2);
-
-        if _tick_len == _runner.duration_moving_average_tick {
-            if let Some(tick) = _first_tick {
-                variance -= (I256::from(tick.price.as_u64())
-                    - I256::from(_new_tick.moving_average.unwrap().as_u64()))
-                .pow(2);
-            }
-        } else if let Some(tick) = _last_tick {
-            moving_average -= I256::from(
-                tick.moving_average
-                    .ok_or(RunnerError::LastTickMovingAverageNone())?
-                    .as_u64(),
-            );
-        }
-
-        let old_ma_len =
-            I256::from((_tick_len + 1).min(_runner.duration_moving_average_tick)) * I256::exp10(6);
-        moving_average = mul_div_i256(moving_average, I256::exp10(6), old_ma_len).ok_or(
-            RunnerError::MovingAverageMulDivLenOverflow(moving_average, old_ma_len),
-        )?;
-
-        moving_average += I256::from(
-            _last_tick
-                .unwrap()
-                .moving_average
-                .ok_or(RunnerError::LastTickMovingAverageNone())?
-                .as_u64(),
-        );
+        let is_first_last_tick_some = _first_tick.is_some()
+            && _last_tick.is_some()
+            && _first_tick.unwrap().moving_average.is_some()
+            && _last_tick.unwrap().moving_average.is_some();
+        let is_new_moving_average_some = _new_tick.moving_average.is_some();
+        let is_old_variance_some = _last_tick.is_some() && _last_tick.unwrap().variance.is_some();
         let mut tick = _new_tick.clone();
-        if moving_average.is_negative() {
-            return Err(RunnerError::MovingAverageIsNegative(moving_average));
+        match _tick_len {
+            i if i == 0 => tick.variance = Some(U64::zero()),
+            i if i == 1 => {
+                // variance = ((new_ma - old_value)² + (new_ma - new_value)²)/new_size
+                if !is_new_moving_average_some {
+                    return Err(RunnerError::NewTickMovingAverageForVarianceNone());
+                }
+                if !is_first_last_tick_some {
+                    return Err(RunnerError::FirstLastTickMovingAverageNone());
+                }
+                let old_value = I256::from(_last_tick.unwrap().price.as_u64());
+                let new_value = I256::from(_new_tick.price.as_u64());
+                let new_ma = I256::from(_new_tick.moving_average.unwrap().as_u64());
+                let new_size = I256::from(2) * I256::exp10(6);
+                let mut variance = (new_ma - old_value).pow(2);
+                variance += (new_ma - new_value).pow(2);
+                variance = mul_div_i256(variance, I256::exp10(6), new_size)
+                    .ok_or(RunnerError::VarianceMulDivLenOverflow(variance, new_size))?;
+                tick.variance = Some(U64::from(variance.abs().as_u64()));
+            }
+            i if i == _runner.duration_moving_average_tick => {
+                // variance = old_variance + (new_ma - old_ma)²
+                // + ((new_ma - new_value)² - (new_ma - removed_value)²)/new_size
+                if !is_new_moving_average_some {
+                    return Err(RunnerError::NewTickMovingAverageForVarianceNone());
+                }
+                if !is_first_last_tick_some {
+                    return Err(RunnerError::FirstLastTickMovingAverageNone());
+                }
+                if !is_old_variance_some {
+                    return Err(RunnerError::LastTickVarianceNone());
+                }
+                let removed_value = I256::from(_first_tick.unwrap().price.as_u64());
+                let old_variance = I256::from(_last_tick.unwrap().variance.unwrap().as_u64());
+                let new_value = I256::from(_new_tick.price.as_u64());
+                let new_ma = I256::from(_new_tick.moving_average.unwrap().as_u64());
+                let old_ma = I256::from(_last_tick.unwrap().moving_average.unwrap().as_u64());
+                let new_size = I256::from(_runner.duration_moving_average_tick) * I256::exp10(6);
+                let mut variance = (new_ma - new_value).pow(2);
+                variance -= (new_ma - removed_value).pow(2);
+                variance = mul_div_i256(variance, I256::exp10(6), new_size)
+                    .ok_or(RunnerError::VarianceMulDivLenOverflow(variance, new_size))?;
+                variance += (new_ma - old_ma).pow(2);
+                variance += old_variance;
+                tick.variance = Some(U64::from(variance.abs().as_u64()));
+            }
+            _ => {
+                // variance =  (old_size / new_size) * (old_variance + ((old_ma - new_value)²/new_size))
+                if !is_new_moving_average_some {
+                    return Err(RunnerError::NewTickMovingAverageForVarianceNone());
+                }
+                if !is_first_last_tick_some {
+                    return Err(RunnerError::FirstLastTickMovingAverageNone());
+                }
+                if !is_old_variance_some {
+                    return Err(RunnerError::LastTickVarianceNone());
+                }
+                let old_variance = I256::from(_last_tick.unwrap().variance.unwrap().as_u64());
+                let new_value = I256::from(_new_tick.price.as_u64());
+                let old_ma = I256::from(_last_tick.unwrap().moving_average.unwrap().as_u64());
+                let old_size = I256::from(_tick_len) * I256::exp10(6);
+                let new_size = I256::from(_tick_len + 1) * I256::exp10(6);
+                let mut variance = (old_ma - new_value).pow(2);
+                variance = mul_div_i256(variance, I256::exp10(6), new_size)
+                    .ok_or(RunnerError::VarianceMulDivLenOverflow(variance, new_size))?;
+                variance += old_variance;
+                variance += mul_div_i256(variance, old_size, new_size)
+                    .ok_or(RunnerError::VarianceMulDivLenOverflow(variance, new_size))?;
+                tick.variance = Some(U64::from(variance.abs().as_u64()));
+            }
         }
-        tick.moving_average = Some(U64::from(moving_average.into_sign_and_abs().1.as_u64()));
         Ok(tick)
-    }*/
+    }
 }
 
 #[cfg(test)]
