@@ -367,6 +367,7 @@ impl Runner {
                 Runner::make_sliding_moving_average(_runner, &None, &None, tick_len, _new_tick)
             }
             TicksState::FirstNewLastNew => Runner::make_sliding_moving_average(
+                // old[...] new[1, =>2<=, 3, =>4<=] len=3
                 _runner,
                 &_new_ticks
                     .get(0.max(
@@ -377,6 +378,7 @@ impl Runner {
                 _new_tick,
             ),
             TicksState::FirstOldLastNew => Runner::make_sliding_moving_average(
+                // old[1, 2, 3, =>4<=] new [5, =>6<=] len=3
                 _runner,
                 &_old_ticks.get(0.max(
                     (_old_ticks.len() as i64)
@@ -388,6 +390,7 @@ impl Runner {
                 _new_tick,
             ),
             TicksState::FirstOldLastOld => Runner::make_sliding_moving_average(
+                // old[1, =>2<=, 3, =>4<=] new [] len=3
                 _runner,
                 &_old_ticks
                     .get(0.max(
