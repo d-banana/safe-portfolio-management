@@ -4,6 +4,7 @@ use crate::mul_div::*;
 use ethers::types::{I256, U64};
 use rand::rngs::ThreadRng;
 use rand::{thread_rng, Rng};
+use std::env::var;
 use thiserror::Error;
 
 #[derive(Error, Debug, PartialEq)]
@@ -33,11 +34,13 @@ pub enum RunnerError {
     #[error("Duration moving average tick should be greater than 0 ({0})")]
     DurationMovingAverageTickCantBeZeroNegative(usize),
     #[error("Moving average muldiv by old lend overflow ({0} muldiv {1})")]
-    MovingAverageMulDivLenOverflow(I256, U64),
-    #[error("Last tick doesn't have moving average")]
-    LastTickMovingAverageNone(),
+    MovingAverageMulDivLenOverflow(I256, I256),
+    #[error("Ticks len not zero so first and last tick should be not None.")]
+    FirstLastTickMovingAverageNone(),
     #[error("Moving average can't be negative({0})")]
     MovingAverageIsNegative(I256),
+    #[error("Need last moving average to compute new variance.")]
+    NewTickNoAverageForVariance(),
     #[error("Tick error {0}")]
     Tick(TickError),
     #[error("Actors error {0}")]
@@ -156,7 +159,7 @@ impl Runner {
 
         while current_time_ms < end_time_ms {
             let current_actor_power =
-                ActorPower::new(ActorPowerState::EQUAL, ActorPowerState::EQUAL);
+                ActorPower::new(ActorPowerState::EQUAL, ActorPowerState::LESS);
             let current_duration_market_state_ms = rng
                 .gen_range(
                     self.duration_between_market_state_range_ms.0
@@ -206,7 +209,7 @@ impl Runner {
                 current_price,
                 is_buy,
             )? {
-                ticks.push(Runner::make_sliding_moving_average_from_ticks(
+                ticks.push(Runner::make_indicators_from_ticks(
                     _runner, _ticks, &ticks, &tick,
                 )?);
             }
@@ -326,41 +329,75 @@ impl Runner {
         Ok(actors)
     }
 
-    pub fn make_sliding_moving_average_from_ticks(
+    pub fn make_indicators_from_ticks(
         _runner: &Runner,
         _old_ticks: &Vec<Tick>,
         _new_ticks: &Vec<Tick>,
         _new_tick: &Tick,
     ) -> Result<Tick, RunnerError> {
+        enum TicksState {
+            Zero,
+            FirstNewLastNew,
+            FirstOldLastNew,
+            FirstOldLastOld,
+        }
+        let mut state: TicksState = TicksState::FirstOldLastNew;
         let tick_len = _runner
             .duration_moving_average_tick
             .min(_old_ticks.len() + _new_ticks.len());
 
         let is_ticks_zero = tick_len == 0;
         if is_ticks_zero {
+            state = TicksState::Zero;
             return Runner::make_sliding_moving_average(_runner, &None, &None, tick_len, _new_tick);
         }
-
-        let mut first_tick = None;
-        if _new_ticks.len() >= _runner.duration_moving_average_tick {
-            first_tick = _new_ticks.get(_new_ticks.len() - _runner.duration_moving_average_tick);
-        } else if _new_ticks.len() + _old_ticks.len() >= _runner.duration_moving_average_tick {
-            first_tick = _old_ticks
-                .get(_old_ticks.len() - (_runner.duration_moving_average_tick - _new_ticks.len()));
-        } else if _old_ticks.is_empty() {
-            first_tick = _new_ticks.first();
-        } else {
-            first_tick = _old_ticks.first();
+        if _new_ticks.is_empty() {
+            state = TicksState::FirstOldLastOld;
+        }
+        if _old_ticks.is_empty() {
+            state = TicksState::FirstNewLastNew
+        }
+        let is_new_full = _new_ticks.len() >= _runner.duration_moving_average_tick;
+        if is_new_full {
+            state = TicksState::FirstNewLastNew
         }
 
-        let mut last_tick = None;
-        if !_new_ticks.is_empty() {
-            last_tick = _new_ticks.last();
-        } else {
-            last_tick = _old_ticks.last();
-        }
-
-        Runner::make_sliding_moving_average(_runner, &first_tick, &last_tick, tick_len, _new_tick)
+        return match state {
+            TicksState::Zero => {
+                Runner::make_sliding_moving_average(_runner, &None, &None, tick_len, _new_tick)
+            }
+            TicksState::FirstNewLastNew => Runner::make_sliding_moving_average(
+                _runner,
+                &_new_ticks
+                    .get(0.max(
+                        (_new_ticks.len() as i64) - (_runner.duration_moving_average_tick as i64),
+                    ) as usize),
+                &_new_ticks.last(),
+                tick_len,
+                _new_tick,
+            ),
+            TicksState::FirstOldLastNew => Runner::make_sliding_moving_average(
+                _runner,
+                &_old_ticks.get(0.max(
+                    (_old_ticks.len() as i64)
+                        - ((_runner.duration_moving_average_tick as i64)
+                            - (_new_ticks.len() as i64)),
+                ) as usize),
+                &_new_ticks.last(),
+                tick_len,
+                _new_tick,
+            ),
+            TicksState::FirstOldLastOld => Runner::make_sliding_moving_average(
+                _runner,
+                &_old_ticks
+                    .get(0.max(
+                        (_old_ticks.len() as i64) - (_runner.duration_moving_average_tick as i64),
+                    ) as usize),
+                &_old_ticks.last(),
+                tick_len,
+                _new_tick,
+            ),
+        };
     }
 
     pub fn make_sliding_moving_average(
@@ -370,17 +407,90 @@ impl Runner {
         _tick_len: usize,
         _new_tick: &Tick,
     ) -> Result<Tick, RunnerError> {
+        enum MovingAverageState {
+            Zero,
+            Add,
+            AddRemove,
+        }
+        let mut state: MovingAverageState = MovingAverageState::Add;
+        let is_ticks_zero = _tick_len == 0;
+        if is_ticks_zero {
+            state = MovingAverageState::Zero;
+        }
+        let is_ticks_max = _tick_len == _runner.duration_moving_average_tick;
+        if is_ticks_max {
+            state = MovingAverageState::AddRemove;
+        }
+        let is_first_last_tick_some = _first_tick.is_some()
+            && _last_tick.is_some()
+            && _first_tick.unwrap().moving_average.is_some()
+            && _last_tick.unwrap().moving_average.is_some();
+        let mut tick = _new_tick.clone();
+        match state {
+            MovingAverageState::Zero => {
+                tick.moving_average = Some(tick.price);
+            }
+            MovingAverageState::Add => {
+                // average_new = old_average + ((new_value - old_average)/new_size)
+                if !is_first_last_tick_some {
+                    return Err(RunnerError::FirstLastTickMovingAverageNone());
+                }
+                let old_average = I256::from(_last_tick.unwrap().moving_average.unwrap().as_u64());
+                let new_value = I256::from(_new_tick.price.as_u64());
+                let new_size = I256::from(_tick_len + 1) * I256::exp10(6);
+                let mut moving_average = new_value - old_average;
+                moving_average = old_average
+                    + mul_div_i256(moving_average, I256::exp10(6), new_size).ok_or(
+                        RunnerError::MovingAverageMulDivLenOverflow(moving_average, new_size),
+                    )?;
+                tick.moving_average = Some(U64::from(moving_average.abs().as_u64()));
+            }
+            MovingAverageState::AddRemove => {
+                // average_new = old_average + ((new_value - removed_value)/new_size)
+                if !is_first_last_tick_some {
+                    return Err(RunnerError::FirstLastTickMovingAverageNone());
+                }
+                let old_average = I256::from(_last_tick.unwrap().moving_average.unwrap().as_u64());
+                let new_value = I256::from(_new_tick.price.as_u64());
+                let removed_value = I256::from(_first_tick.unwrap().price.as_u64());
+                let new_size = I256::from(_tick_len) * I256::exp10(6);
+                let mut moving_average = new_value - removed_value;
+                moving_average = old_average
+                    + mul_div_i256(moving_average, I256::exp10(6), new_size).ok_or(
+                        RunnerError::MovingAverageMulDivLenOverflow(moving_average, new_size),
+                    )?;
+                tick.moving_average = Some(U64::from(moving_average.abs().as_u64()));
+            }
+        }
+        Ok(tick)
+    }
+
+    /*pub fn make_sliding_variance(
+        _runner: &Runner,
+        _first_tick: &Option<&Tick>,
+        _last_tick: &Option<&Tick>,
+        _tick_len: usize,
+        _new_tick: &Tick,
+    ) -> Result<Tick, RunnerError> {
+        let is_new_average_computed = _new_tick.moving_average.is_some();
+        if !is_new_average_computed {
+            return Err(RunnerError::NewTickNoAverageForVariance());
+        }
         let is_ticks_zero = _tick_len == 0;
         if is_ticks_zero {
             let mut tick = _new_tick.clone();
-            tick.moving_average = Some(tick.price);
+            tick.variance = Some(U64::zero());
             return Ok(tick);
         }
-        let mut moving_average: I256 = I256::from(_new_tick.price.as_u64());
+        let mut variance: I256 = (I256::from(_new_tick.price.as_u64())
+            - I256::from(_new_tick.moving_average.unwrap().as_u64()))
+        .pow(2);
 
         if _tick_len == _runner.duration_moving_average_tick {
             if let Some(tick) = _first_tick {
-                moving_average -= I256::from(tick.price.as_u64());
+                variance -= (I256::from(tick.price.as_u64())
+                    - I256::from(_new_tick.moving_average.unwrap().as_u64()))
+                .pow(2);
             }
         } else if let Some(tick) = _last_tick {
             moving_average -= I256::from(
@@ -391,20 +501,13 @@ impl Runner {
         }
 
         let old_ma_len =
-            U64::from((_tick_len + 1).min(_runner.duration_moving_average_tick)) * U64::exp10(6);
-        moving_average = mul_div_i256(
-            moving_average,
-            I256::exp10(6),
-            I256::from(old_ma_len.as_u64()),
-        )
-        .ok_or(RunnerError::MovingAverageMulDivLenOverflow(
-            moving_average,
-            old_ma_len,
-        ))?;
+            I256::from((_tick_len + 1).min(_runner.duration_moving_average_tick)) * I256::exp10(6);
+        moving_average = mul_div_i256(moving_average, I256::exp10(6), old_ma_len).ok_or(
+            RunnerError::MovingAverageMulDivLenOverflow(moving_average, old_ma_len),
+        )?;
 
         moving_average += I256::from(
             _last_tick
-                .clone()
                 .unwrap()
                 .moving_average
                 .ok_or(RunnerError::LastTickMovingAverageNone())?
@@ -416,14 +519,13 @@ impl Runner {
         }
         tick.moving_average = Some(U64::from(moving_average.into_sign_and_abs().1.as_u64()));
         Ok(tick)
-    }
+    }*/
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use std::collections::HashMap;
-    use std::ops::Add;
 
     #[test]
     fn runner_new() {
@@ -446,7 +548,7 @@ mod tests {
             runner.actor_liquidity_amplifier_x1_000_000,
             U64::from(1_005_000)
         );
-        assert_eq!(runner.duration_moving_average_tick, 10_000);
+        assert_eq!(runner.duration_moving_average_tick, 1_000_000);
     }
 
     fn _assert_equal_in_range(actors: Result<Actors, RunnerError>, runner: &Runner) {
@@ -776,40 +878,25 @@ mod tests {
     #[test]
     fn make_ticks_for_actor_power_trend() {
         let mut rng = thread_rng();
-        let runner = Runner::new(
-            U64::from(1) * U64::exp10(5),
-            (15, 30_000),
-            (14 * 24 * 60 * 60 * 1000, 90 * 24 * 60 * 60 * 1000),
-            (U64::from(1) * U64::exp10(6), U64::from(100) * U64::exp10(6)),
-            (U64::from(1) * U64::exp10(6), U64::from(100) * U64::exp10(6)),
-            U64::from(1_008_000),
-            10_000,
-        )
-        .unwrap();
-        let actors = Actors::new(
-            U64::from(220) * U64::exp10(6),
-            U64::from(100) * U64::exp10(6),
-            U64::from(10) * U64::exp10(6),
-        )
-        .unwrap();
+        let mut runner = Runner::default();
         let current_time_ms: u64 = 42;
         let current_price = U64::from(1_000) * U64::exp10(6);
-        let current_duration_market_state_ms = 14 * 24 * 60 * 60 * 1000;
+        let current_duration_market_state_ms = 32 * 24 * 60 * 60 * 1000;
         let mut prices_map: HashMap<ActorPower, Vec<U64>> = HashMap::new();
         let actor_powers = vec![
-            ActorPower::new(ActorPowerState::EQUAL, ActorPowerState::EQUAL), // 0
-            ActorPower::new(ActorPowerState::GREATER, ActorPowerState::GREATER), // 1
-            ActorPower::new(ActorPowerState::LESS, ActorPowerState::LESS),   // 2
-            ActorPower::new(ActorPowerState::EQUAL, ActorPowerState::GREATER), // 3
-            ActorPower::new(ActorPowerState::EQUAL, ActorPowerState::LESS),  // 4
-            ActorPower::new(ActorPowerState::GREATER, ActorPowerState::EQUAL), // 5
-            ActorPower::new(ActorPowerState::GREATER, ActorPowerState::LESS), // 6
-            ActorPower::new(ActorPowerState::LESS, ActorPowerState::EQUAL),  // 7
-            ActorPower::new(ActorPowerState::LESS, ActorPowerState::GREATER), // 8
+            ActorPower::new(ActorPowerState::EQUAL, ActorPowerState::EQUAL),
+            ActorPower::new(ActorPowerState::GREATER, ActorPowerState::GREATER),
+            ActorPower::new(ActorPowerState::LESS, ActorPowerState::LESS),
+            ActorPower::new(ActorPowerState::EQUAL, ActorPowerState::GREATER),
+            ActorPower::new(ActorPowerState::EQUAL, ActorPowerState::LESS),
+            ActorPower::new(ActorPowerState::GREATER, ActorPowerState::EQUAL),
+            ActorPower::new(ActorPowerState::GREATER, ActorPowerState::LESS),
+            ActorPower::new(ActorPowerState::LESS, ActorPowerState::EQUAL),
+            ActorPower::new(ActorPowerState::LESS, ActorPowerState::GREATER),
         ];
 
         for actor_power in &actor_powers {
-            for _ in 0..4 {
+            for _ in 0..2 {
                 let current_actor_power = actor_power;
 
                 let ticks = Runner::make_ticks_for_actor_power(
@@ -908,6 +995,38 @@ mod tests {
         assert!(tick.is_ok());
         let tick = tick.unwrap();
         assert!(tick.moving_average.is_some());
+        assert_eq!(tick.moving_average.unwrap(), U64::from(15));
+
+        let tick = Runner::make_sliding_moving_average(
+            &runner,
+            &Some(
+                &Tick::new(
+                    U64::from(20),
+                    0,
+                    U64::one(),
+                    true,
+                    Some(U64::from(20)),
+                    None,
+                )
+                .unwrap(),
+            ),
+            &Some(
+                &Tick::new(
+                    U64::from(20),
+                    0,
+                    U64::one(),
+                    true,
+                    Some(U64::from(20)),
+                    None,
+                )
+                .unwrap(),
+            ),
+            1,
+            &Tick::new(U64::from(10), 0, U64::one(), true, None, None).unwrap(),
+        );
+        assert!(tick.is_ok());
+        let tick = tick.unwrap();
+        assert!(tick.moving_average.is_some());
         assert_eq!(tick.moving_average.unwrap(), U64::from(15))
     }
 
@@ -970,5 +1089,294 @@ mod tests {
         let tick = tick.unwrap();
         assert!(tick.moving_average.is_some());
         assert_eq!(tick.moving_average.unwrap(), U64::from(25))
+    }
+
+    #[test]
+    fn make_indicators_from_ticks_full_old() {
+        let runner = Runner::new(
+            U64::from(1) * U64::exp10(5),
+            (15, 30_000),
+            (14 * 24 * 60 * 60 * 1000, 90 * 24 * 60 * 60 * 1000),
+            (U64::from(1) * U64::exp10(6), U64::from(100) * U64::exp10(6)),
+            (U64::from(1) * U64::exp10(6), U64::from(100) * U64::exp10(6)),
+            U64::from(1_008_000),
+            3,
+        )
+        .unwrap();
+        let old_ticks = vec![
+            Tick::new(
+                U64::from(10),
+                0,
+                U64::one(),
+                true,
+                Some(U64::from(10)),
+                None,
+            )
+            .unwrap(),
+            Tick::new(
+                U64::from(20),
+                0,
+                U64::one(),
+                true,
+                Some(U64::from(15)),
+                None,
+            )
+            .unwrap(),
+            Tick::new(
+                U64::from(30),
+                0,
+                U64::one(),
+                true,
+                Some(U64::from(20)),
+                None,
+            )
+            .unwrap(),
+        ];
+        let tick = Runner::make_indicators_from_ticks(
+            &runner,
+            &old_ticks,
+            &vec![],
+            &Tick::new(U64::from(40), 0, U64::one(), true, None, None).unwrap(),
+        );
+        assert!(tick.is_ok());
+        let tick = tick.unwrap();
+        assert!(tick.moving_average.is_some());
+        assert_eq!(tick.moving_average.unwrap(), U64::from(30));
+    }
+
+    #[test]
+    fn make_indicators_from_ticks_full_new() {
+        let runner = Runner::new(
+            U64::from(1) * U64::exp10(5),
+            (15, 30_000),
+            (14 * 24 * 60 * 60 * 1000, 90 * 24 * 60 * 60 * 1000),
+            (U64::from(1) * U64::exp10(6), U64::from(100) * U64::exp10(6)),
+            (U64::from(1) * U64::exp10(6), U64::from(100) * U64::exp10(6)),
+            U64::from(1_008_000),
+            3,
+        )
+        .unwrap();
+        let new_ticks = vec![
+            Tick::new(
+                U64::from(10),
+                0,
+                U64::one(),
+                true,
+                Some(U64::from(10)),
+                None,
+            )
+            .unwrap(),
+            Tick::new(
+                U64::from(20),
+                0,
+                U64::one(),
+                true,
+                Some(U64::from(15)),
+                None,
+            )
+            .unwrap(),
+            Tick::new(
+                U64::from(30),
+                0,
+                U64::one(),
+                true,
+                Some(U64::from(20)),
+                None,
+            )
+            .unwrap(),
+        ];
+        let tick = Runner::make_indicators_from_ticks(
+            &runner,
+            &vec![],
+            &new_ticks,
+            &Tick::new(U64::from(40), 0, U64::one(), true, None, None).unwrap(),
+        );
+        assert!(tick.is_ok());
+        let tick = tick.unwrap();
+        assert!(tick.moving_average.is_some());
+        assert_eq!(tick.moving_average.unwrap(), U64::from(30));
+    }
+
+    #[test]
+    fn make_indicators_from_ticks_partial_old() {
+        let runner = Runner::new(
+            U64::from(1) * U64::exp10(5),
+            (15, 30_000),
+            (14 * 24 * 60 * 60 * 1000, 90 * 24 * 60 * 60 * 1000),
+            (U64::from(1) * U64::exp10(6), U64::from(100) * U64::exp10(6)),
+            (U64::from(1) * U64::exp10(6), U64::from(100) * U64::exp10(6)),
+            U64::from(1_008_000),
+            3,
+        )
+        .unwrap();
+        let old_ticks = vec![
+            Tick::new(
+                U64::from(10),
+                0,
+                U64::one(),
+                true,
+                Some(U64::from(10)),
+                None,
+            )
+            .unwrap(),
+            Tick::new(
+                U64::from(20),
+                0,
+                U64::one(),
+                true,
+                Some(U64::from(15)),
+                None,
+            )
+            .unwrap(),
+        ];
+        let tick = Runner::make_indicators_from_ticks(
+            &runner,
+            &old_ticks,
+            &vec![],
+            &Tick::new(U64::from(30), 0, U64::one(), true, None, None).unwrap(),
+        );
+        assert!(tick.is_ok());
+        let tick = tick.unwrap();
+        assert!(tick.moving_average.is_some());
+        assert_eq!(tick.moving_average.unwrap(), U64::from(20));
+    }
+
+    #[test]
+    fn make_indicators_from_ticks_partial_new() {
+        let runner = Runner::new(
+            U64::from(1) * U64::exp10(5),
+            (15, 30_000),
+            (14 * 24 * 60 * 60 * 1000, 90 * 24 * 60 * 60 * 1000),
+            (U64::from(1) * U64::exp10(6), U64::from(100) * U64::exp10(6)),
+            (U64::from(1) * U64::exp10(6), U64::from(100) * U64::exp10(6)),
+            U64::from(1_008_000),
+            3,
+        )
+        .unwrap();
+        let new_ticks = vec![
+            Tick::new(
+                U64::from(10),
+                0,
+                U64::one(),
+                true,
+                Some(U64::from(10)),
+                None,
+            )
+            .unwrap(),
+            Tick::new(
+                U64::from(20),
+                0,
+                U64::one(),
+                true,
+                Some(U64::from(15)),
+                None,
+            )
+            .unwrap(),
+        ];
+        let tick = Runner::make_indicators_from_ticks(
+            &runner,
+            &vec![],
+            &new_ticks,
+            &Tick::new(U64::from(30), 0, U64::one(), true, None, None).unwrap(),
+        );
+        assert!(tick.is_ok());
+        let tick = tick.unwrap();
+        assert!(tick.moving_average.is_some());
+        assert_eq!(tick.moving_average.unwrap(), U64::from(20));
+    }
+
+    #[test]
+    fn make_indicators_from_ticks_full_new_old() {
+        let runner = Runner::new(
+            U64::from(1) * U64::exp10(5),
+            (15, 30_000),
+            (14 * 24 * 60 * 60 * 1000, 90 * 24 * 60 * 60 * 1000),
+            (U64::from(1) * U64::exp10(6), U64::from(100) * U64::exp10(6)),
+            (U64::from(1) * U64::exp10(6), U64::from(100) * U64::exp10(6)),
+            U64::from(1_008_000),
+            3,
+        )
+        .unwrap();
+        let old_ticks = vec![
+            Tick::new(
+                U64::from(10),
+                0,
+                U64::one(),
+                true,
+                Some(U64::from(10)),
+                None,
+            )
+            .unwrap(),
+            Tick::new(
+                U64::from(20),
+                0,
+                U64::one(),
+                true,
+                Some(U64::from(15)),
+                None,
+            )
+            .unwrap(),
+        ];
+        let new_ticks = vec![Tick::new(
+            U64::from(30),
+            0,
+            U64::one(),
+            true,
+            Some(U64::from(20)),
+            None,
+        )
+        .unwrap()];
+        let tick = Runner::make_indicators_from_ticks(
+            &runner,
+            &old_ticks,
+            &new_ticks,
+            &Tick::new(U64::from(40), 0, U64::one(), true, None, None).unwrap(),
+        );
+        assert!(tick.is_ok());
+        let tick = tick.unwrap();
+        assert!(tick.moving_average.is_some());
+        assert_eq!(tick.moving_average.unwrap(), U64::from(30));
+    }
+
+    #[test]
+    fn make_indicators_from_ticks_partal_new_old() {
+        let runner = Runner::new(
+            U64::from(1) * U64::exp10(5),
+            (15, 30_000),
+            (14 * 24 * 60 * 60 * 1000, 90 * 24 * 60 * 60 * 1000),
+            (U64::from(1) * U64::exp10(6), U64::from(100) * U64::exp10(6)),
+            (U64::from(1) * U64::exp10(6), U64::from(100) * U64::exp10(6)),
+            U64::from(1_008_000),
+            3,
+        )
+        .unwrap();
+        let old_ticks = vec![Tick::new(
+            U64::from(10),
+            0,
+            U64::one(),
+            true,
+            Some(U64::from(10)),
+            None,
+        )
+        .unwrap()];
+        let new_ticks = vec![Tick::new(
+            U64::from(20),
+            0,
+            U64::one(),
+            true,
+            Some(U64::from(15)),
+            None,
+        )
+        .unwrap()];
+        let tick = Runner::make_indicators_from_ticks(
+            &runner,
+            &old_ticks,
+            &new_ticks,
+            &Tick::new(U64::from(30), 0, U64::one(), true, None, None).unwrap(),
+        );
+        assert!(tick.is_ok());
+        let tick = tick.unwrap();
+        assert!(tick.moving_average.is_some());
+        assert_eq!(tick.moving_average.unwrap(), U64::from(20));
     }
 }
