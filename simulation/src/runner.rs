@@ -540,7 +540,7 @@ impl Runner {
                 variance = mul_div_i256(variance, I256::exp10(6), new_size)
                     .ok_or(RunnerError::VarianceMulDivLenOverflow(variance, new_size))?;
                 variance += old_variance;
-                variance += mul_div_i256(variance, old_size, new_size)
+                variance = mul_div_i256(variance, old_size, new_size)
                     .ok_or(RunnerError::VarianceMulDivLenOverflow(variance, new_size))?;
                 tick.variance = Some(U64::from(variance.abs().as_u64()));
             }
@@ -1407,7 +1407,30 @@ mod tests {
         assert_eq!(tick.moving_average.unwrap(), U64::from(20));
     }
     #[test]
-    fn make_variance_success() {
+    fn make_variance_len_0() {
+        let runner = Runner::default();
+        let tick = Runner::make_sliding_variance(
+            &runner,
+            &None,
+            &None,
+            0,
+            &Tick::new(
+                U64::from(20),
+                0,
+                U64::one(),
+                true,
+                Some(U64::from(15)),
+                None,
+            )
+            .unwrap(),
+        );
+        assert!(tick.is_ok());
+        let tick = tick.unwrap();
+        assert!(tick.variance.is_some());
+        assert_eq!(tick.variance.unwrap(), U64::from(0));
+    }
+    #[test]
+    fn make_variance_len_1() {
         let runner = Runner::default();
         let tick = Runner::make_sliding_variance(
             &runner,
@@ -1448,5 +1471,92 @@ mod tests {
         let tick = tick.unwrap();
         assert!(tick.variance.is_some());
         assert_eq!(tick.variance.unwrap(), U64::from(25));
+    }
+    #[test]
+    fn make_variance_len_2() {
+        let runner = Runner::default();
+        let tick = Runner::make_sliding_variance(
+            &runner,
+            &Some(
+                &Tick::new(
+                    U64::from(10),
+                    0,
+                    U64::one(),
+                    true,
+                    Some(U64::from(10)),
+                    Some(U64::from(0)),
+                )
+                .unwrap(),
+            ),
+            &Some(
+                &Tick::new(
+                    U64::from(20),
+                    0,
+                    U64::one(),
+                    true,
+                    Some(U64::from(15)),
+                    Some(U64::from(25)),
+                )
+                .unwrap(),
+            ),
+            2,
+            &Tick::new(
+                U64::from(30),
+                0,
+                U64::one(),
+                true,
+                Some(U64::from(20)),
+                None,
+            )
+            .unwrap(),
+        );
+        assert!(tick.is_ok());
+        let tick = tick.unwrap();
+        assert!(tick.variance.is_some());
+        assert_eq!(tick.variance.unwrap(), U64::from(66));
+    }
+    #[test]
+    fn make_variance_len_max() {
+        let mut runner = Runner::default();
+        runner.duration_moving_average_tick = 2;
+        let tick = Runner::make_sliding_variance(
+            &runner,
+            &Some(
+                &Tick::new(
+                    U64::from(10),
+                    0,
+                    U64::one(),
+                    true,
+                    Some(U64::from(10)),
+                    Some(U64::from(0)),
+                )
+                .unwrap(),
+            ),
+            &Some(
+                &Tick::new(
+                    U64::from(20),
+                    0,
+                    U64::one(),
+                    true,
+                    Some(U64::from(15)),
+                    Some(U64::from(25)),
+                )
+                .unwrap(),
+            ),
+            2,
+            &Tick::new(
+                U64::from(40),
+                0,
+                U64::one(),
+                true,
+                Some(U64::from(30)),
+                None,
+            )
+            .unwrap(),
+        );
+        assert!(tick.is_ok());
+        let tick = tick.unwrap();
+        assert!(tick.variance.is_some());
+        assert_eq!(tick.variance.unwrap(), U64::from(100));
     }
 }
