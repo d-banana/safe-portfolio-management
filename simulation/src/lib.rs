@@ -6,6 +6,7 @@ use ethers::types::U64;
 use std::ops::Div;
 
 mod actor;
+mod indicator;
 mod runner;
 
 pub fn generate_price_graph() -> (Vec<(DateTime<Utc>, f64)>, Vec<(DateTime<Utc>, f64)>) {
